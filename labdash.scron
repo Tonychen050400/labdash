@@ -1,17 +1,30 @@
 # labdash scrontab - install with:  scrontab labdash.scron     (list: scrontab -l)
 #
-# Slurm's cron. Each firing is a real job, so it survives login-node reboots and
-# is the sanctioned way to run recurring work on Cannon. A #SCRON block applies to
-# the cron line that follows it.
+# Slurm's cron. Each firing is a real job on a compute node, so it survives login-node
+# reboots, needs nobody logged in, and is the sanctioned way to run recurring work on
+# Cannon. A #SCRON block applies to the cron line that follows it.
+#
+# THIS FILE IS THE ONLY PLACE OUR LAB'S SPECIFICS LIVE. The scripts derive their
+# defaults from whoever runs them; everything below that names ydu_lab or a kempner
+# path is an override for this deployment. To run labdash for another lab, change:
+#   --account=...        the plain Slurm account (four #SCRON blocks + the sbatch line)
+#   LABDASH_OUT=...      where the page is written; must be readable by your web publish
+#   LABDASH_ROOTS=...    the directories whose children are people's folders (README)
+#   $HOME/projects/labdash   if you cloned somewhere else
+# then `scrontab labdash.scron`. Our overrides, and why:
+#   - LABDASH_OUT points at kempner_ydu_lab's holylabs because ydu_lab's own
+#     allocation is at 100% and writes there fail.
+#   - LABDASH_ROOTS lists both groups' trees explicitly (kempner_ydu_lab is a second
+#     account with its own folders, which the group-derived default would miss).
 #
 # Never name an interpreter version here. python3.11 was removed from the cluster on
 # about 2026-08-22 and every line that hardcoded it began exiting 127 -- silently, for
 # days, because a cron job that fails leaves no trace on the page it was supposed to
 # update. py.sh resolves whatever exists at run time.
 #
-# Account must be ydu_lab, not kempner_ydu_lab: the Kempner accounts are restricted
-# to the Kempner partitions and Slurm rejects them on `shared` with "Invalid account
-# or account/partition combination specified". Same restriction as gpu_requeue.
+# Account must be the plain lab account (ydu_lab), not kempner_ydu_lab: the Kempner
+# accounts are restricted to the Kempner partitions and Slurm rejects them on `shared`
+# with "Invalid account or account/partition combination specified". Same as gpu_requeue.
 
 # ---------------------------------------------------------------------------
 # Dashboard refresh, every 15 minutes. Kept at 15 deliberately: the Pages 503s that
@@ -29,7 +42,7 @@
 #SCRON --job-name=labdash
 #SCRON --output=/dev/null
 #SCRON --open-mode=append
-*/15 * * * * LABDASH_PUBLISH=git $HOME/projects/labdash/run.sh
+*/15 * * * * LABDASH_OUT=/n/holylabs/LABS/kempner_ydu_lab/Lab/labdash LABDASH_PUBLISH=git $HOME/projects/labdash/run.sh
 
 # ---------------------------------------------------------------------------
 # Per-directory scan. This cron entry only SUBMITS the real work: the walk is
@@ -48,7 +61,7 @@
 #SCRON --time=00:10:00
 #SCRON --job-name=dirscan_submit
 #SCRON --output=/dev/null
-0 2 * * * cd $HOME/projects/labdash && sbatch --parsable dirscan_array.sbatch
+0 2 * * * cd $HOME/projects/labdash && LABDASH_OUT=/n/holylabs/LABS/kempner_ydu_lab/Lab/labdash LABDASH_ROOTS="/n/holylabs/LABS/ydu_lab/Lab /n/holylabs/LABS/ydu_lab/Everyone /n/holylabs/LABS/kempner_ydu_lab/Lab /n/holylabs/LABS/kempner_ydu_lab/Everyone /n/lab_storage/ydu_lab /n/netscratch/ydu_lab/Lab /n/netscratch/ydu_lab/Everyone" sbatch --parsable --account=ydu_lab dirscan_array.sbatch
 
 # ---------------------------------------------------------------------------
 # Storage alert to Slack. Once a day, in the morning - NOT on the 15-minute
@@ -56,7 +69,7 @@
 # is one people mute. Storage only; the non-preemptible-partition nudge is meant
 # to go out by email instead, which is waiting on the roster addresses.
 #
-# All three locations are discovered automatically, including /n/lab_storage/ydu_lab
+# All three locations are discovered automatically, including /n/lab_storage/<lab>
 # -- Isilon only reveals a fileset's 100 TiB limit when df is asked about the
 # directory itself, not the mount point.
 # ---------------------------------------------------------------------------
@@ -67,7 +80,7 @@
 #SCRON --time=00:10:00
 #SCRON --job-name=labdash_alert
 #SCRON --output=/dev/null
-0 9 * * * $HOME/projects/labdash/py.sh $HOME/projects/labdash/notify.py --storage-only --threshold 90
+0 9 * * * LABDASH_OUT=/n/holylabs/LABS/kempner_ydu_lab/Lab/labdash $HOME/projects/labdash/py.sh $HOME/projects/labdash/notify.py --storage-only --threshold 90
 
 # ---------------------------------------------------------------------------
 # Roster refresh - picks up new lab members, keeps emails already typed in.
@@ -79,4 +92,4 @@
 #SCRON --time=00:15:00
 #SCRON --job-name=roster
 #SCRON --output=/dev/null
-30 2 * * * $HOME/projects/labdash/py.sh $HOME/projects/labdash/roster.py --out /n/holylabs/LABS/kempner_ydu_lab/Lab/labdash
+30 2 * * * LABDASH_GROUPS="ydu_lab kempner_ydu_lab" $HOME/projects/labdash/py.sh $HOME/projects/labdash/roster.py --out /n/holylabs/LABS/kempner_ydu_lab/Lab/labdash

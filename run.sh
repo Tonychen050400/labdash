@@ -14,9 +14,10 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # hardcoded reference exited 127 for days without anyone noticing.
 PY=$("$HERE/py.sh" --print)
 
-# Default output lives on the kempner group's holylabs quota. ydu_lab's own
-# holylabs allocation sits at 100% - writing there fails.
-: "${LABDASH_OUT:=/n/holylabs/LABS/kempner_ydu_lab/Lab/labdash}"
+# Default output: the running user's lab folder on holylabs. Override with
+# LABDASH_OUT when that allocation is full (ours is -- labdash.scron points at a
+# sibling account's quota) or when the lab keeps its tree somewhere else.
+: "${LABDASH_OUT:=/n/holylabs/LABS/$(id -gn)/Lab/labdash}"
 : "${LABDASH_PUBLISH:=none}"
 : "${LABDASH_REPO:=$HOME/projects/labdash-site}"
 

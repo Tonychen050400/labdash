@@ -18,6 +18,7 @@ notify_state.json, because that one really is a nag.
 """
 
 import argparse
+import grp
 import json
 import os
 import sys
@@ -210,8 +211,9 @@ def post(webhook, text, key="text"):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
+    primary = grp.getgrgid(os.getgid()).gr_name
     ap.add_argument("--out", default=os.environ.get(
-        "LABDASH_OUT", "/n/holylabs/LABS/kempner_ydu_lab/Lab/labdash"))
+        "LABDASH_OUT", f"/n/holylabs/LABS/{primary}/Lab/labdash"))
     ap.add_argument("--webhook-url", default=os.environ.get("SLACK_WEBHOOK_URL", ""))
     ap.add_argument("--webhook-file", default=os.path.expanduser(
         "~/.config/labdash/webhook"),

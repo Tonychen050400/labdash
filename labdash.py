@@ -1233,12 +1233,13 @@ def _dirscan_section(scan, folders=(), snap=None):
                     # the quota -- and why it can exceed the group's limit without
                     # anything being wrong.
                     why.append("a group quota counts this group's files anywhere on "
-                               "the filesystem, while this folder holds files charged "
-                               "to <em>other</em> groups &mdash; setgid directories "
-                               "under <code>kempner_ydu_lab</code> and even "
-                               "<code>kempner_rcai_lab</code> live in here, so the two "
-                               "totals are not the same set of bytes and the folder "
-                               "figure is not bounded by the quota limit")
+                               "the filesystem, while this folder can hold files "
+                               "charged to <em>other</em> groups &mdash; a setgid tree "
+                               "under an affiliated account (a Kempner sub-account, a "
+                               "collaborator's group) sits inside the lab folder but "
+                               "bills elsewhere &mdash; so the two totals are not the "
+                               "same set of bytes and the folder figure is not bounded "
+                               "by the quota limit")
                 if nbad:
                     why.append(f"{nbad} director{'y' if nbad == 1 else 'ies'} here "
                                f"(<code>{esc(', '.join(failed[:6]))}</code>) "

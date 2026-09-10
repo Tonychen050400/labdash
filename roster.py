@@ -51,9 +51,12 @@ def full_name(user):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
+    primary = run(["id", "-gn"]).strip() or "lab"
     ap.add_argument("--out", default=os.environ.get(
-        "LABDASH_OUT", "/n/holylabs/LABS/kempner_ydu_lab/Lab/labdash"))
-    ap.add_argument("--groups", default="ydu_lab,kempner_ydu_lab")
+        "LABDASH_OUT", f"/n/holylabs/LABS/{primary}/Lab/labdash"))
+    # LABDASH_GROUPS is space-separated in labdash.scron; accept commas too.
+    ap.add_argument("--groups", default=os.environ.get("LABDASH_GROUPS", primary)
+                    .replace(" ", ","))
     ap.add_argument("--active-only", action="store_true")
     args = ap.parse_args()
 

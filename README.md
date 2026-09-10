@@ -36,8 +36,8 @@ with elapsed time against each job's own wall limit.
 ## Two data traps it works around
 
 **`df` lies here.** It reports the whole shared array — 87% full and 553 TB free
-looks fine while `ydu_lab` is at its own 100 TiB ceiling. Quota is per group per
-filesystem: `quota -g ydu_lab /n/netscratch`.
+looks fine while your lab is at its own 100 TiB ceiling. Quota is per group per
+filesystem: `quota -g <lab> /n/netscratch`.
 
 **`quota --group-user-usage` is not a breakdown of the group quota.** Verified
 against the tool: pass three different groups and a shared member reports
@@ -51,6 +51,63 @@ Two smaller limits worth knowing: the per-user scan is a nightly VAST report, so
 directory deleted today still shows until tomorrow; and Slurm only exposes other
 people's finished jobs in aggregate (`sacct -a` returns nothing without coordinator
 rights), so per-person history is GPU-hours rather than job lists.
+
+## Running it for your own lab
+
+Nothing in the collector is tied to one lab. Slurm accounts come from `sacctmgr`
+for whoever runs it, and the storage panels are filled from that user's primary Unix
+group over FASRC's standard layout (`/n/holylabs/LABS/<lab>`, `/n/netscratch/<lab>`,
+`/n/lab_storage/<lab>`). Every value that is specific to *a* deployment lives in one
+file, `labdash.scron`. The checklist:
+
+**1. Clone it on Cannon as a member of your lab group.** This is the one constraint
+that cannot be worked around: the per-person storage figures come from walking
+directories, so an instance only sees what the user running it can read. Someone
+outside the group cannot produce correct numbers for you, and neither can a shared
+service account unless it is in the group.
+
+**2. Decide which directories to walk.** Lab trees differ, so this is the one thing
+to get right by hand. The rule: **point each root at the directory whose immediate
+children are people's folders.** `dirscan.py` charges every child to the child's
+*owner* (uid), never its name — names are nicknames (`alex` belongs to `atong`) and
+attributing by name misreports real people. Two refinements happen automatically:
+a child that itself holds many different owners (more than half of its
+subdirectories owned by different people) is treated as a container and expanded one
+level; a child holding many directories under a *few* owners is labelled `(shared)`
+rather than blamed on whoever created it. So:
+
+| your tree looks like | point the root at |
+|---|---|
+| `/n/holylabs/LABS/<lab>/Lab/<name>` | `/n/holylabs/LABS/<lab>/Lab` |
+| `/n/holylabs/LABS/<lab>/Users/<name>` | `/n/holylabs/LABS/<lab>/Users` |
+| `/n/holylabs/LABS/<lab>/<name>` (flat) | `/n/holylabs/LABS/<lab>` |
+| one person's directory | don't — that is one row |
+
+Check a candidate with `ls -ln <dir> | head`: the third column (uid) should differ
+from line to line. Without any configuration, `dirscan_array.sbatch` walks whichever
+of `Lab/`, `Users/`, `Everyone/` exist under holylabs and netscratch for your group,
+plus `/n/lab_storage/<lab>`. Set `LABDASH_ROOTS="<dir> <dir> ..."` to override, or
+`LABDASH_GROUPS="<lab> <second_lab>"` if the lab bills under two accounts with two
+trees (ours does).
+
+**3. Edit `labdash.scron`.** Four things, listed at the top of the file with the
+reasons next to them: the `--account=` (a plain lab account — Kempner accounts are
+rejected on `shared`), `LABDASH_OUT` (where the page is written), `LABDASH_ROOTS` from
+step 2, and the `$HOME/projects/labdash` paths if you cloned elsewhere. A lab with one
+account and a standard tree can delete the `LABDASH_ROOTS=` and `LABDASH_GROUPS=`
+overrides entirely and let the derived defaults apply.
+
+**4. Run the collector once by hand** — `./py.sh labdash.py --out <dir>` takes ~4
+seconds and is fine on a login node; open the `index.html` it wrote. The directory
+walk is **not** fine on a login node: submit it,
+`LABDASH_OUT=<dir> sbatch --account=<lab> dirscan_array.sbatch`, and the page grows
+its per-person tables when the shards land.
+
+**5. `scrontab labdash.scron`** — see the next section for what that installs.
+
+**6. Publish** (two sections down) — and before you do, agree as a lab that a page
+naming every member with their disk usage and GPU-hours is something you want on the
+open web. Pages sites are public even from a private repo.
 
 ## Keeping it fresh
 
@@ -85,9 +142,10 @@ Two things that bite people here:
 `sapphire` — parallel because serial holylabs took 87 minutes), a 09:00 storage
 alert to Slack, and a roster refresh. Only the first is required to have a page.
 
-Output defaults to `/n/holylabs/LABS/kempner_ydu_lab/Lab/labdash`. Note this is
-deliberately *not* `ydu_lab`'s holylabs allocation — that one is at 100% and writes
-there fail.
+Output defaults to `/n/holylabs/LABS/<your primary group>/Lab/labdash`; set
+`LABDASH_OUT` to put it elsewhere. (Ours is elsewhere: `ydu_lab`'s holylabs
+allocation is at 100% and writes there fail, so `labdash.scron` points every entry at
+a sibling account's quota.)
 
 ## Getting it in front of the lab
 
@@ -99,18 +157,20 @@ already has cluster SSH.
 
 ```
 ssh -L 8899:localhost:8899 you@login.rc.fas.harvard.edu \
-  'cd /n/holylabs/LABS/kempner_ydu_lab/Lab/labdash && python3 -m http.server 8899'
+  'cd $LABDASH_OUT && python3 -m http.server 8899'
 # then open http://localhost:8899
 ```
 
 **2. GitHub Pages** — a clickable URL, no tunnel, no login. This is the one in use.
-Outbound HTTPS works from the cluster, and `~/projects/labdash-site` is already a
-git repo holding the current snapshot.
+Outbound HTTPS works from the cluster. The site repo is separate from this source
+repo (it holds one force-amended commit of generated HTML, so nothing you would want
+history for belongs in it); any account can own it — a personal one is fine, and the
+repo can be transferred to a lab org later.
 
 ```
 # 1. create an EMPTY repo at https://github.com/new  (no README, no .gitignore)
 # 2. wire it up and watch for the site to answer 200:
-./setup_pages.sh Embodied-Minds-Lab/labdash-site
+./setup_pages.sh <owner>/<repo>
 # 3. the script prints the Settings->Pages step; do it once
 ```
 
@@ -123,8 +183,7 @@ Each publish **amends the single commit and force-pushes**, so the repo stays ~1
 forever. A linear history would be tens of GB a year of snapshots nobody will ever
 diff; the trend data lives in `history.jsonl` on the cluster instead.
 
-Publishing runs every 30 minutes. That is not a fix for anything in here — it halves
-the exposure to a flaky dependency. Pages deploys began failing with 503 at
+Publishing runs on the same 15-minute refresh. Pages deploys began failing with 503 at
 2026-08-17T15:15Z after **86 consecutive successes** on this same setup, so the cause
 is GitHub-side; failure showed no correlation with the gap between pushes (two pushes
 1.7 min apart both deployed fine), which is what ruled out the tempting
@@ -140,7 +199,12 @@ browser opens `index.html` directly with no tunnel and no external hosting.
 | | |
 |---|---|
 | `labdash.py` | collector + renderer, the whole tool |
+| `py.sh` | finds a usable Python; every entry point goes through it |
 | `run.sh` | refresh, then optionally publish; scrontab-safe |
+| `labdash.scron` | scrontab entries: 15-min refresh, nightly walk, daily alert, roster — **and the only file holding a lab's specific paths/accounts** |
+| `dirscan.py`, `dirscan_array.sbatch` | the per-person directory walk and the array job that runs it |
+| `notify.py` | daily storage alert to Slack |
+| `roster.py` | username → email skeleton for the alert, typed in once by a human |
 | `setup_pages.sh` | one-time GitHub Pages wiring, verifies the site answers 200 |
-| `labdash.scron` | scrontab entries: refresh every 30 min, nightly crawl, daily alert |
+| `bench/` | GPU throughput measurements behind the hardware guide |
 | `history.jsonl` | one line per run, in the output dir; feeds the trend lines |
