@@ -1,0 +1,19 @@
+# Real lab data, never publish: per-user disk and GPU figures for the whole lab.
+out/
+snapshot.json
+history.jsonl
+index.html
+fragment.html
+# username -> email mapping, typed by hand
+roster.csv
+
+# Slurm job logs (thousands of them; they carry directory paths)
+logs/
+
+# Local undo history: labdash.py.bak2, .bak-2140, .broken-bak, .pre-audit, ...
+*.bak*
+*-bak
+*.pre-*
+
+__pycache__/
+*.pyc

@@ -1,0 +1,82 @@
+# labdash scrontab - install with:  scrontab labdash.scron     (list: scrontab -l)
+#
+# Slurm's cron. Each firing is a real job, so it survives login-node reboots and
+# is the sanctioned way to run recurring work on Cannon. A #SCRON block applies to
+# the cron line that follows it.
+#
+# Never name an interpreter version here. python3.11 was removed from the cluster on
+# about 2026-08-22 and every line that hardcoded it began exiting 127 -- silently, for
+# days, because a cron job that fails leaves no trace on the page it was supposed to
+# update. py.sh resolves whatever exists at run time.
+#
+# Account must be ydu_lab, not kempner_ydu_lab: the Kempner accounts are restricted
+# to the Kempner partitions and Slurm rejects them on `shared` with "Invalid account
+# or account/partition combination specified". Same restriction as gpu_requeue.
+
+# ---------------------------------------------------------------------------
+# Dashboard refresh, every 15 minutes. Kept at 15 deliberately: the Pages 503s that
+# started at 2026-08-17T15:15Z are GitHub-side (86 consecutive successes before that
+# on this identical setup, and failure showed no correlation with the gap between
+# pushes -- two pushes 1.7 min apart both deployed fine). Slowing our cadence would
+# only paper over someone else's outage, and a failed deploy costs one stale cycle,
+# never downtime.
+# ---------------------------------------------------------------------------
+#SCRON --partition=shared
+#SCRON --account=ydu_lab
+#SCRON --cpus-per-task=1
+#SCRON --mem=2G
+#SCRON --time=00:10:00
+#SCRON --job-name=labdash
+#SCRON --output=/dev/null
+#SCRON --open-mode=append
+*/15 * * * * LABDASH_PUBLISH=git $HOME/projects/labdash/run.sh
+
+# ---------------------------------------------------------------------------
+# Per-directory scan. This cron entry only SUBMITS the real work: the walk is
+# parallel across top-level directories, so it runs as a 32-task array on sapphire
+# rather than one long serial job. Sequential holylabs took 87 min; the array's
+# wall clock is set by the single slowest directory instead (~13 min there).
+# Shards write separate files and labdash unions them by directory name at render.
+# Daily is not a compromise here: the per-user quota data it sits beside is itself
+# a nightly scan, so polling harder would surface no new information.
+# 02:00 keeps it clear of the working day.
+# ---------------------------------------------------------------------------
+#SCRON --partition=shared
+#SCRON --account=ydu_lab
+#SCRON --cpus-per-task=1
+#SCRON --mem=2G
+#SCRON --time=00:10:00
+#SCRON --job-name=dirscan_submit
+#SCRON --output=/dev/null
+0 2 * * * cd $HOME/projects/labdash && sbatch --parsable dirscan_array.sbatch
+
+# ---------------------------------------------------------------------------
+# Storage alert to Slack. Once a day, in the morning - NOT on the 15-minute
+# refresh: even with the crossing/repeat rules, an alerter that can speak at 3am
+# is one people mute. Storage only; the non-preemptible-partition nudge is meant
+# to go out by email instead, which is waiting on the roster addresses.
+#
+# All three locations are discovered automatically, including /n/lab_storage/ydu_lab
+# -- Isilon only reveals a fileset's 100 TiB limit when df is asked about the
+# directory itself, not the mount point.
+# ---------------------------------------------------------------------------
+#SCRON --partition=shared
+#SCRON --account=ydu_lab
+#SCRON --cpus-per-task=1
+#SCRON --mem=2G
+#SCRON --time=00:10:00
+#SCRON --job-name=labdash_alert
+#SCRON --output=/dev/null
+0 9 * * * $HOME/projects/labdash/py.sh $HOME/projects/labdash/notify.py --storage-only --threshold 90
+
+# ---------------------------------------------------------------------------
+# Roster refresh - picks up new lab members, keeps emails already typed in.
+# ---------------------------------------------------------------------------
+#SCRON --partition=shared
+#SCRON --account=ydu_lab
+#SCRON --cpus-per-task=1
+#SCRON --mem=2G
+#SCRON --time=00:15:00
+#SCRON --job-name=roster
+#SCRON --output=/dev/null
+30 2 * * * $HOME/projects/labdash/py.sh $HOME/projects/labdash/roster.py --out /n/holylabs/LABS/kempner_ydu_lab/Lab/labdash
