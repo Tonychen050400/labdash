@@ -1203,15 +1203,17 @@ def _group_tables_section(scan, snap):
                     row["files"] += v.get("files") or 0
                     row["parts"].append({"dir": prefix + e["dir"], "bytes": b,
                                          "files": v.get("files") or 0})
-    for g in sorted(seen_groups, key=lambda g: -seen_groups[g]):
-        if g not in groups:
-            groups.append(g)
+    # Only the lab's own groups get a table. A few KiB some collaborator's group
+    # owns inside our tree is not something anyone here acts on; it is named once.
+    stray = sorted((g for g in seen_groups if g not in groups),
+                   key=lambda g: -seen_groups[g])
+    walk_done = all(r.get("complete") for r in scan["roots"])
 
     panels = []
     for g in groups:
         rows = sorted((row for (gg, _), row in per.items() if gg == g),
                       key=lambda o: -o["bytes"])
-        if not rows and g not in seen_groups:
+        if not rows and walk_done:
             continue
         total = sum(o["bytes"] for o in rows) or 1
         peak = rows[0]["bytes"] if rows else 1
@@ -1257,7 +1259,7 @@ def _group_tables_section(scan, snap):
             # A gap either way is real: bytes this group is charged for outside
             # these trees (or inside directories we cannot read) on one side, the
             # hourly quota report lagging deletions on the other.
-            gap_txt = (f' &middot; {esc(fmt_bytes(abs(gap)))} '
+            gap_txt = "" if not walk_done else (f' &middot; {esc(fmt_bytes(abs(gap)))} '
                        f'{"charged to the group but not found in these trees" if gap > 0 else "more here than the quota report shows (it lags deletions)"}'
                        if abs(gap) > 0.02 * (q["used_bytes"] or 1) else "")
         else:
@@ -1294,6 +1296,8 @@ def _group_tables_section(scan, snap):
     if not panels:
         return ""
     trees = ", ".join(f"<code>{esc(r)}</code>" for r in roots_shown)
+    stray_txt = ("" if not stray else " Also inside these trees, billed to other labs' groups: "
+                 + ", ".join(f"<code>{esc(g)}</code> {esc(fmt_bytes(seen_groups[g]))}" for g in stray) + ".")
     return f"""<section class="section" id="by-group">
   <header class="section__head">
     <h2>On /n/netscratch, by quota group</h2>
@@ -1301,7 +1305,7 @@ def _group_tables_section(scan, snap):
       the <b>owner of each file</b> &mdash; wherever the file sits, and whoever's
       directory it is in. A shared dataset therefore bills to whoever uploaded it,
       which is what the filesystem does too. Walked by us, these trees only: {trees}.
-      Files charged to a group elsewhere on netscratch are not here.</p>
+      Files charged to a group elsewhere on netscratch are not here.{stray_txt}</p>
   </header>
   {''.join(panels)}
   <p class="note note--bare">{('Scanned ' + esc(scan['generated_local'])) if scan.get('generated_local') else 'Walk in progress'};
