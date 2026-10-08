@@ -1308,7 +1308,8 @@ def _dirscan_section(scan, folders=(), snap=None):
     &mdash; the names are nicknames that do not match usernames (<code>alex</code>
     belongs to atong, <code>agopalak</code> to agopalakrishnan). An
     <code>Everyone/</code> prefix marks shared data rather than someone's own files.
-    Scanned {esc(scan.get('generated_local', 'unknown'))}; the walk is expensive, so it
+    {('Scanned ' + esc(scan['generated_local'])) if (scan or {}).get('generated_local')
+      else 'No walk has completed yet'}; the walk is expensive, so it
     runs once a day rather than with every refresh.</p>
 </section>"""
 
