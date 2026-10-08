@@ -681,7 +681,7 @@ def sparkline(points, width=260, height=44):
     )
 
 
-def render(snap, history, fragment=False, dirscan=None, gpu_guide=None):
+def render(snap, history, fragment=False, dirscan=None, gpu_guide=None, ownerscan=None):
     """Full standalone document by default; body-only when publishing as an Artifact
     (the Artifact host supplies its own doctype/head/body skeleton)."""
     worst = None
@@ -694,6 +694,7 @@ def render(snap, history, fragment=False, dirscan=None, gpu_guide=None):
         _masthead(snap, worst),
         _rules_section(snap, gpu_guide),
         _storage_section(snap, history),
+        _group_tables_section(ownerscan, snap),
         _dirscan_section(dirscan, snap.get("folders") or [], snap),
         _compute_section(snap, gpu_guide),
         _jobs_section(snap),
@@ -1116,6 +1117,196 @@ def _quota_for_folder(snap, folder):
         if folder.rstrip("/").endswith("/" + group) and folder.startswith(q["path"]):
             best = q
     return best
+
+
+def load_ownerscan(out_dir):
+    """Union of ownerscan shards: bytes by (quota group, file owner) per directory.
+
+    Newest measurement of each (root, directory) wins. Lives in owner_shards/, not
+    shards/, because load_dirscan globs the latter and these files are a different
+    shape.
+    """
+    docs = []
+    d = os.path.join(out_dir, "owner_shards")
+    try:
+        names = sorted(f for f in os.listdir(d) if f.endswith(".json"))
+    except OSError:
+        return None
+    for f in names:
+        try:
+            with open(os.path.join(d, f)) as fh:
+                docs.append(json.load(fh))
+        except (OSError, json.JSONDecodeError):
+            continue
+    if not docs:
+        return None
+    docs.sort(key=lambda x: x.get("generated_at") or "")
+    roots, stamp, stamp_local = {}, "", ""
+    for doc in docs:
+        for r in doc.get("roots", []):
+            acc = roots.setdefault(r.get("root"), {"root": r.get("root"), "entries": {},
+                                                   "total_dirs": None})
+            for e in r.get("entries", []):
+                acc["entries"][e.get("dir")] = dict(e)
+            if r.get("total_dirs"):
+                acc["total_dirs"] = r["total_dirs"]
+        if (doc.get("generated_at") or "") >= stamp:
+            stamp, stamp_local = doc.get("generated_at") or "", doc.get("generated_local") or ""
+    out = []
+    for r in roots.values():
+        ents = list(r["entries"].values())
+        out.append({"root": r["root"], "entries": ents, "total_dirs": r["total_dirs"],
+                    "scanned": len(ents),
+                    "unreadable": [e["dir"] for e in ents if e.get("unreadable")],
+                    "incomplete": [e["dir"] for e in ents
+                                   if not e.get("unreadable") and not e.get("complete")],
+                    "complete": bool(r["total_dirs"]) and len(ents) >= r["total_dirs"]
+                                and all(e.get("complete") or e.get("unreadable") for e in ents)})
+    return {"generated_at": stamp, "generated_local": stamp_local,
+            "roots": sorted(out, key=lambda r: r["root"] or "")}
+
+
+def _group_tables_section(scan, snap):
+    """One table per quota group: who owns the bytes that bill to it.
+
+    Asked for on the day the lab had to get ydu_lab under a new limit. Neither
+    other measurement answers it: `quota --group-user-usage` gives each person's
+    filesystem-wide total regardless of group, and the folder walk charges a
+    directory to its owner and subtracts whole other-group subtrees. This attributes
+    each FILE to (its group, its owner) -- so a member who chgrp'd 26 TiB to the
+    Kempner quota appears in that group's table under their own name, and a shared
+    dataset bills to whoever uploaded it, which is also what the filesystem does.
+    """
+    if not scan or not scan.get("roots"):
+        return ""
+    groups = list(snap.get("groups") or [])
+    # bytes per (group, owner), with the directories behind each row
+    per = {}
+    seen_groups = {}
+    unreadable, incomplete, roots_shown = [], [], []
+    for r in scan["roots"]:
+        leaf = os.path.basename((r.get("root") or "").rstrip("/"))
+        prefix = f"{leaf}/" if leaf in SUBTREES else ""
+        roots_shown.append(r.get("root") or "")
+        unreadable += [prefix + d for d in r.get("unreadable", [])]
+        incomplete += [prefix + d for d in r.get("incomplete", [])]
+        for e in r.get("entries", []):
+            for g, users in (e.get("by") or {}).items():
+                for u, v in users.items():
+                    b = v.get("bytes") or 0
+                    if not b:
+                        continue
+                    seen_groups[g] = seen_groups.get(g, 0) + b
+                    row = per.setdefault((g, u), {"owner": u, "bytes": 0, "files": 0,
+                                                  "parts": []})
+                    row["bytes"] += b
+                    row["files"] += v.get("files") or 0
+                    row["parts"].append({"dir": prefix + e["dir"], "bytes": b,
+                                         "files": v.get("files") or 0})
+    for g in sorted(seen_groups, key=lambda g: -seen_groups[g]):
+        if g not in groups:
+            groups.append(g)
+
+    panels = []
+    for g in groups:
+        rows = sorted((row for (gg, _), row in per.items() if gg == g),
+                      key=lambda o: -o["bytes"])
+        if not rows and g not in seen_groups:
+            continue
+        total = sum(o["bytes"] for o in rows) or 1
+        peak = rows[0]["bytes"] if rows else 1
+        q = next((x for x in snap.get("storage", [])
+                  if x.get("group") == g and x.get("path") == "/n/netscratch"
+                  and x.get("quota_bytes")), None)
+        body = []
+        for i, o in enumerate(rows):
+            share = o["bytes"] / total
+            parts = sorted(o["parts"], key=lambda x: -x["bytes"])
+            dirs = ", ".join(p["dir"] for p in parts)
+            extra = " is-extra" if i >= TOP_ROWS else ""
+            multi = len(parts) > 1
+            name = (f'<button class="disclose" type="button" aria-expanded="false">'
+                    f'<span class="caret" aria-hidden="true"></span>{esc(o["owner"])}'
+                    f'<span class="count">{len(parts)}</span></button>'
+                    if multi else esc(o["owner"]))
+            body.append(f"""<tr class="row{extra}{' is-parent' if multi else ''}" data-user="{esc(o['owner'])} {esc(dirs)}">
+  <td class="num dim cell-rank">{i + 1}</td>
+  <td class="cell-user">{name}</td>
+  <td class="mono dim">{esc(dirs if len(dirs) <= 34 else dirs[:31] + '...')}</td>
+  <td class="num" data-sort="{o['bytes']}">{esc(fmt_bytes(o['bytes']))}</td>
+  <td class="cell-bar" title="{esc(o['owner'])}: {esc(fmt_bytes(o['bytes']))}, {share*100:.1f}% of what bills to {esc(g)} here">{bar(o['bytes']/peak)}</td>
+  <td class="num dim">{share*100:.1f}%</td>
+  <td class="num dim">{esc(fmt_int(o['files']))}</td>
+</tr>""")
+            if multi:
+                items = "".join(
+                    f'<li><span class="mono">{esc(pt["dir"])}</span>'
+                    f'<span class="pbar">{bar(pt["bytes"] / (o["bytes"] or 1))}</span>'
+                    f'<b>{esc(fmt_bytes(pt["bytes"]))}</b>'
+                    f'<span class="dim">{esc(fmt_int(pt["files"]))} files</span></li>'
+                    for pt in parts)
+                body.append(f'<tr class="detail{extra}" hidden><td></td>'
+                            f'<td colspan="6"><ul class="parts">{items}</ul></td></tr>')
+        if q:
+            gap = (q["used_bytes"] or 0) - sum(o["bytes"] for o in rows)
+            pct = q["used_bytes"] / q["quota_bytes"] * 100
+            tone = "crit" if pct >= 95 else "warn" if pct >= 85 else "good"
+            quota_txt = (f' &middot; quota <span class="pill pill--{tone}">'
+                         f'{esc(fmt_bytes(q["used_bytes"]))} of {esc(fmt_bytes(q["quota_bytes"]))}, '
+                         f'{pct:.0f}%</span>')
+            # A gap either way is real: bytes this group is charged for outside
+            # these trees (or inside directories we cannot read) on one side, the
+            # hourly quota report lagging deletions on the other.
+            gap_txt = (f' &middot; {esc(fmt_bytes(abs(gap)))} '
+                       f'{"charged to the group but not found in these trees" if gap > 0 else "more here than the quota report shows (it lags deletions)"}'
+                       if abs(gap) > 0.02 * (q["used_bytes"] or 1) else "")
+        else:
+            quota_txt, gap_txt = "", ""
+        flags = ""
+        if unreadable:
+            flags += f' <span class="pill pill--warn" title="{esc(", ".join(unreadable[:8]))}">{len(unreadable)} unreadable</span>'
+        if incomplete:
+            flags += f' <span class="pill pill--warn" title="{esc(", ".join(incomplete[:8]))}">{len(incomplete)} incomplete</span>'
+        if not all(r.get("complete") for r in scan["roots"]):
+            done = sum(r.get("scanned", 0) for r in scan["roots"])
+            want = sum(r.get("total_dirs") or 0 for r in scan["roots"])
+            flags += f' <span class="pill pill--unknown">walk in progress &mdash; {done}/{want or "?"} directories</span>'
+        more = len(rows) - TOP_ROWS
+        panels.append(f"""<div class="panel">
+  <header class="panel__head">
+    <div>
+      <h3>/n/netscratch ({esc(g)})</h3>
+      <p class="stamp">{len(rows)} people &middot; {esc(fmt_bytes(total if rows else 0))} billed to <b>{esc(g)}</b> in these trees{quota_txt}{gap_txt}{flags}</p>
+    </div>
+    <div class="controls">
+      <input class="filter" type="search" placeholder="Find a name&hellip;"
+             aria-label="Filter this table by username">
+      {f'<button class="toggle" type="button">Show all {len(rows)}</button>' if more > 0 else ''}
+    </div>
+  </header>
+  <div class="scroll"><table class="table table--sortable">
+    <thead><tr><th class="num">#</th><th>Owner</th><th>Directories</th><th class="num">Space</th>
+      <th>Relative</th><th class="num">Share</th><th class="num">Files</th></tr></thead>
+    <tbody>{''.join(body)}</tbody>
+  </table></div>
+  <p class="empty" hidden>No one here matches that name.</p>
+</div>""")
+    if not panels:
+        return ""
+    trees = ", ".join(f"<code>{esc(r)}</code>" for r in roots_shown)
+    return f"""<section class="section" id="by-group">
+  <header class="section__head">
+    <h2>On /n/netscratch, by quota group</h2>
+    <p>Each table is the space that counts against one group's quota, attributed to
+      the <b>owner of each file</b> &mdash; wherever the file sits, and whoever's
+      directory it is in. A shared dataset therefore bills to whoever uploaded it,
+      which is what the filesystem does too. Walked by us, these trees only: {trees}.
+      Files charged to a group elsewhere on netscratch are not here.</p>
+  </header>
+  {''.join(panels)}
+  <p class="note note--bare">{('Scanned ' + esc(scan['generated_local'])) if scan.get('generated_local') else 'Walk in progress'};
+    the walk is expensive, so it runs once a day rather than with every refresh.</p>
+</section>"""
 
 
 def _dirscan_section(scan, folders=(), snap=None):
@@ -2131,12 +2322,13 @@ def main():
     history = append_history(snap, os.path.join(out, "history.jsonl"))
 
     dirscan = load_dirscan(out)
+    ownerscan = load_ownerscan(out)
     gpu_guide = load_gpu_guide(out)
     files = [("snapshot.json", json.dumps(snap, indent=2)),
-             ("index.html", render(snap, history, dirscan=dirscan, gpu_guide=gpu_guide))]
+             ("index.html", render(snap, history, dirscan=dirscan, gpu_guide=gpu_guide, ownerscan=ownerscan))]
     if args.fragment:
         files.append(("fragment.html",
-                      render(snap, history, fragment=True, dirscan=dirscan, gpu_guide=gpu_guide)))
+                      render(snap, history, fragment=True, dirscan=dirscan, gpu_guide=gpu_guide, ownerscan=ownerscan)))
 
     # write via temp + rename so a reader never sees a half-written page
     for name, text in files:
