@@ -1015,6 +1015,11 @@ def load_dirscan(out_dir):
                 for field in ("bytes", "inodes"):
                     if e.get(field) is not None:
                         merged[field] = e[field]
+                # foreign_bytes is only meaningful beside the bytes it was
+                # subtracted from, so it moves with them (and clears to None when
+                # a newer run subtracted nothing).
+                if e.get("bytes") is not None:
+                    merged["foreign_bytes"] = e.get("foreign_bytes")
                 for field in ("owner", "seconds"):
                     if e.get("bytes") is not None and e.get(field) is not None:
                         merged[field] = e[field]
@@ -1156,12 +1161,19 @@ def _dirscan_section(scan, folders=(), snap=None):
             leaf = os.path.basename(r["root"].rstrip("/"))
             prefix = f"{leaf}/" if leaf in SUBTREES and len(parts) > 1 else ""
             for e in r.get("entries", []):
-                if not (e.get("bytes") or 0):
+                fb = e.get("foreign_bytes") or 0
+                if not ((e.get("bytes") or 0) + fb):
                     continue
                 o = by_owner.setdefault(e["owner"], {"owner": e["owner"], "bytes": 0,
-                                                     "inodes": 0, "dirs": [],
-                                                     "parts": []})
-                o["bytes"] += e["bytes"] or 0
+                                                     "foreign": 0, "inodes": 0,
+                                                     "dirs": [], "parts": []})
+                # A person's directory is theirs whichever quota it bills to. The
+                # walk subtracts other-group subtrees so the folder total can be
+                # compared with THIS group's quota; adding them back here is what
+                # keeps 26 TiB of one member's data from vanishing off every table
+                # the day they chgrp it to the Kempner quota.
+                o["bytes"] += (e["bytes"] or 0) + fb
+                o["foreign"] += fb
                 # Unknown must stay unknown through the sum. Coercing None to 0 made
                 # a person with an unmeasured file count read as "0 files".
                 if e["inodes"] is None or o["inodes"] is None:
@@ -1169,12 +1181,15 @@ def _dirscan_section(scan, folders=(), snap=None):
                 else:
                     o["inodes"] += e["inodes"]
                 o["dirs"].append(prefix + e["dir"])
-                o["parts"].append({"dir": prefix + e["dir"], "bytes": e["bytes"] or 0,
-                                   "inodes": e["inodes"]})
+                o["parts"].append({"dir": prefix + e["dir"],
+                                   "bytes": (e["bytes"] or 0) + fb,
+                                   "foreign": fb, "inodes": e["inodes"]})
         rows = sorted(by_owner.values(), key=lambda o: -o["bytes"])
         if not rows:
             continue
         total = sum(o["bytes"] for o in rows) or 1
+        foreign_total = sum(o["foreign"] for o in rows)
+        charged = total - foreign_total          # what bills to this group
         ino_known = [o["inodes"] for o in rows if o["inodes"] is not None]
         total_ino = sum(ino_known)
         ino_partial = len(rows) - len(ino_known)
@@ -1196,7 +1211,7 @@ def _dirscan_section(scan, folders=(), snap=None):
   <td class="num dim cell-rank">{i + 1}</td>
   <td class="cell-user">{name}</td>
   <td class="mono dim">{esc(dirs if len(dirs) <= 34 else dirs[:31] + '...')}</td>
-  <td class="num" data-sort="{o['bytes']}">{esc(fmt_bytes(o['bytes']))}</td>
+  <td class="num" data-sort="{o['bytes']}">{esc(fmt_bytes(o['bytes']))}{f'<br><span class="dim" title="charged to another group&#39;s quota (setgid), not to {esc(folder.split(chr(47))[-1])}">{esc(fmt_bytes(o["foreign"]))} other quota</span>' if o['foreign'] else ''}</td>
   <td class="cell-bar" title="{esc(o['owner'])}: {esc(fmt_bytes(o['bytes']))}, {share*100:.1f}% of this folder">{bar(o['bytes']/peak)}</td>
   <td class="num dim">{share*100:.1f}%</td>
   <td class="num dim">{esc(fmt_int(o['inodes'])) if o['inodes'] is not None else '&mdash;'}</td>
@@ -1217,7 +1232,7 @@ def _dirscan_section(scan, folders=(), snap=None):
         scan_settled = all((r.get("resolved", r.get("scanned", 0)) >= (r.get("total_dirs") or 0))
                            for r in parts)
         if q and q.get("used_bytes") and scan_settled:
-            gap = q["used_bytes"] - total
+            gap = q["used_bytes"] - charged
             if abs(gap) > 0.02 * q["used_bytes"]:
                 fileset = q.get("source") == "df-fileset"
                 pct = q["used_bytes"] / q["quota_bytes"] * 100 if q.get("quota_bytes") else 0
@@ -1247,7 +1262,8 @@ def _dirscan_section(scan, folders=(), snap=None):
                                f"by the owner, so the leaderboard figure is a floor")
                 why.append("and a filer charges for block rounding and its own overhead")
                 recon = (f'<p class="note note--flag"><b>Leaderboard: '
-                         f'{esc(fmt_bytes(total))} that we can read. Quota: '
+                         f'{esc(fmt_bytes(charged))} billed to this group that we can read'
+                         f'{f" (+{esc(fmt_bytes(foreign_total))} here billed to other groups)" if foreign_total else ""}. Quota: '
                          f'{esc(fmt_bytes(q["used_bytes"]))} of '
                          f'{esc(fmt_bytes(q["quota_bytes"]))}, {pct:.0f}% used.</b> '
                          f'These will not match &mdash; {"; ".join(why)}. '
@@ -1273,7 +1289,7 @@ def _dirscan_section(scan, folders=(), snap=None):
   <header class="panel__head">
     <div>
       <h3>{esc(folder)}</h3>
-      <p class="stamp">{len(rows)} people &middot; {esc(fmt_bytes(total))} of files &middot;
+      <p class="stamp">{len(rows)} people &middot; {esc(fmt_bytes(total))} of files{f' ({esc(fmt_bytes(foreign_total))} of it charged to other groups&#39; quotas)' if foreign_total else ''} &middot;
         {esc(fmt_int(total_ino))}{'+' if ino_partial else ''} files &middot; <b>walked by us, this folder only</b>
         {partial}</p>
     </div>
