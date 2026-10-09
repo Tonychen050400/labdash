@@ -1159,13 +1159,18 @@ def load_ownerscan(out_dir):
         # so count TOP-LEVEL directories covered, not entries -- otherwise the
         # progress reads "295/95".
         tops = {(e.get("dir") or "").split("/")[0] for e in ents}
-        out.append({"root": r["root"], "entries": ents, "total_dirs": r["total_dirs"],
+        # The tree can gain a directory after the first walk counted it; a fill
+        # run that covers the newcomer must not read as "96/95".
+        total = max(r["total_dirs"] or 0, len(tops)) or None
+        out.append({"root": r["root"], "entries": ents, "total_dirs": total,
                     "scanned": len(tops),
                     "unreadable": [e["dir"] for e in ents if e.get("unreadable")],
                     "incomplete": [e["dir"] for e in ents
                                    if not e.get("unreadable") and not e.get("complete")],
-                    "complete": bool(r["total_dirs"]) and len(tops) >= r["total_dirs"]
-                                and all(e.get("complete") or e.get("unreadable") for e in ents)})
+                    # Done = every top-level directory has been walked. Permission
+                    # gaps inside them are not "in progress" -- they never resolve
+                    # -- and are reported separately as incomplete/unreadable.
+                    "complete": bool(total) and len(tops) >= total})
     return {"generated_at": stamp, "generated_local": stamp_local,
             "roots": sorted(out, key=lambda r: r["root"] or "")}
 
