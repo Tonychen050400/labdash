@@ -62,11 +62,14 @@ def owner_of(path):
         return "unknown"
 
 
-def walk(path):
-    """-> (by_group_user, complete, error). by_group_user[group][user] = [bytes, files]."""
+def walk(path, loose=False):
+    """-> (by_group_user, complete, error). by_group_user[group][user] = [bytes, files].
+    loose=True counts only the files directly inside `path` (the companion to
+    walking its subdirectories as separate targets, so nothing goes uncounted)."""
     agg = {}
+    depth = ["-maxdepth", "1"] if loose else []
     try:
-        p = subprocess.Popen(["find", path, "-type", "f", "-printf", "%g\t%u\t%s\n"],
+        p = subprocess.Popen(["find", path] + depth + ["-type", "f", "-printf", "%g\t%u\t%s\n"],
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                              errors="replace")
     except OSError as e:
@@ -144,10 +147,49 @@ def scan_root(root, state, out_path, shard, shards):
     state["complete"] = all(e["complete"] or e["unreadable"] for e in state["entries"])
 
 
+LOOSE = "/."
+
+
+def scan_paths(paths, out_path, shard, shards):
+    """Explicit targets (for directories too big for one find inside the time limit).
+    Each target is recorded under its parent root with dir = path relative to it;
+    a target ending in /. counts only the files sitting directly in that directory."""
+    states = {}
+    for i, target in enumerate(paths):
+        if i % shards != shard:
+            continue
+        loose = target.endswith(LOOSE)
+        real = target[: -len(LOOSE)] if loose else target
+        root = next((r for r in ("/n/netscratch/ydu_lab/Lab", "/n/netscratch/ydu_lab/Everyone")
+                     if real.startswith(r + "/")), os.path.dirname(real))
+        st = states.get(root)
+        if st is None:
+            st = {"root": root, "entries": [], "scanned": 0, "total_dirs": None,
+                  "complete": False, "error": None, "partial_targets": True}
+            states[root] = st
+            RESULT["roots"].append(st)
+        name = os.path.relpath(real, root) + (LOOSE if loose else "")
+        t0 = time.time()
+        by, ok, err = walk(real, loose=loose)
+        entry = {"dir": name, "dir_owner": owner_of(real),
+                 "by": {g: {u: {"bytes": v[0], "files": v[1]} for u, v in us.items()}
+                        for g, us in by.items()},
+                 "bytes": sum(v[0] for us in by.values() for v in us.values()),
+                 "files": sum(v[1] for us in by.values() for v in us.values()),
+                 "complete": ok, "unreadable": False, "error": err,
+                 "seconds": round(time.time() - t0, 1)}
+        st["entries"].append(entry)
+        st["scanned"] = len(st["entries"])
+        write(out_path)
+        print(f"  {name:<40} {entry['bytes']/2**40:7.2f} TiB {entry['files']:>10,} files "
+              f"{entry['seconds']}s{'' if ok else '  INCOMPLETE: ' + str(err)}", flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--out", required=True)
-    ap.add_argument("--roots", nargs="+", required=True)
+    ap.add_argument("--roots", nargs="+", default=[])
+    ap.add_argument("--paths-file", help="explicit target list, one per line (see scan_paths)")
     ap.add_argument("--shard", type=int, default=0)
     ap.add_argument("--shards", type=int, default=1)
     ap.add_argument("--force", action="store_true")
@@ -168,6 +210,10 @@ def main():
     RESULT["generated_local"] = datetime.now().strftime("%Y-%m-%d %H:%M")
     RESULT["host"] = os.uname().nodename
     write(out_path)
+    if args.paths_file:
+        with open(args.paths_file) as fh:
+            paths = [l.strip() for l in fh if l.strip()]
+        scan_paths(paths, out_path, args.shard, args.shards)
     for root in args.roots:
         print(f"[{datetime.now():%H:%M:%S}] scanning {root}", flush=True)
         state = {"root": root, "entries": [], "scanned": 0, "total_dirs": None,
