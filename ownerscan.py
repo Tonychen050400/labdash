@@ -68,9 +68,16 @@ def walk(path, loose=False):
     walking its subdirectories as separate targets, so nothing goes uncounted)."""
     agg = {}
     depth = ["-maxdepth", "1"] if loose else []
+    # stderr goes to a file, never a pipe. A tree with many private subdirectories
+    # makes find write one "Permission denied" line per directory; once a pipe's
+    # 64 KB buffer filled, find blocked writing stderr while we blocked reading
+    # stdout -- a deadlock that held 37k-file directories for the full 12-hour
+    # limit, and the timeout check below never ran because no line ever arrived.
+    import tempfile
+    errf = tempfile.TemporaryFile(mode="w+")
     try:
         p = subprocess.Popen(["find", path] + depth + ["-type", "f", "-printf", "%g\t%u\t%s\n"],
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                             stdout=subprocess.PIPE, stderr=errf, text=True,
                              errors="replace")
     except OSError as e:
         return agg, False, str(e)
@@ -92,8 +99,10 @@ def walk(path, loose=False):
             timed_out = True
             p.kill()
             break
-    err = p.stderr.read().strip()
     p.wait()
+    errf.seek(0)
+    err = errf.read().strip()
+    errf.close()
     if timed_out:
         return agg, False, "timeout"
     # find exits 1 after printing everything it COULD reach when some subdirectory
