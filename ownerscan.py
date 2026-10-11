@@ -230,7 +230,11 @@ def main():
     os.makedirs(shard_dir, exist_ok=True)
     run = ((os.environ.get("SLURM_ARRAY_JOB_ID") or os.environ.get("SLURM_JOB_ID")
             or "manual") + "a" + (os.environ.get("SLURM_RESTART_COUNT") or "0"))
-    out_path = os.path.join(shard_dir, f"ownerscan.{run}.{args.shard:03d}.json")
+    # Name by the array task when there is one. ownerscan_submit.sh gives every
+    # task its own target file and passes --shard 0, so naming by --shard put 64
+    # tasks on one filename: they overwrote each other and raced on the .tmp.
+    idx = int(os.environ.get("SLURM_ARRAY_TASK_ID") or args.shard)
+    out_path = os.path.join(shard_dir, f"ownerscan.{run}.{idx:03d}.json")
 
     RESULT["generated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     RESULT["generated_local"] = datetime.now().strftime("%Y-%m-%d %H:%M")
