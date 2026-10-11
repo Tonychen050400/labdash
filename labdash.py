@@ -1279,7 +1279,16 @@ def _group_tables_section(scan, snap):
             quota_txt, gap_txt = "", ""
         flags = ""
         if unreadable:
-            flags += f' <span class="pill pill--warn" title="{esc(", ".join(unreadable[:8]))}">{len(unreadable)} unreadable</span>'
+            # Split by level: a private top-level folder hides a whole person; a
+            # private subfolder hides part of someone. One count of both read as
+            # "196 unreadable" the day the walk started splitting directories, when
+            # 181 of them were one member's subfolders.
+            whole = [u for u in unreadable if u.count("/") <= 1]
+            sub = [u for u in unreadable if u.count("/") > 1]
+            if whole:
+                flags += f' <span class="pill pill--warn" title="{esc(", ".join(whole[:12]))}">{len(whole)} private user folder{"s" if len(whole) != 1 else ""}</span>'
+            if sub:
+                flags += f' <span class="pill pill--warn" title="{esc(", ".join(sub[:12]))}">{len(sub)} private subfolder{"s" if len(sub) != 1 else ""}</span>'
         if incomplete:
             flags += f' <span class="pill pill--warn" title="{esc(", ".join(incomplete[:8]))}">{len(incomplete)} incomplete</span>'
         age_h = None
