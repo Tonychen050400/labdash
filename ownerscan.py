@@ -159,7 +159,7 @@ def scan_root(root, state, out_path, shard, shards):
 LOOSE = "/."
 
 
-def scan_paths(paths, out_path, shard, shards):
+def scan_paths(paths, out_path, shard, shards, roots=()):
     """Explicit targets (for directories too big for one find inside the time limit).
     Each target is recorded under its parent root with dir = path relative to it;
     a target ending in /. counts only the files sitting directly in that directory."""
@@ -169,16 +169,33 @@ def scan_paths(paths, out_path, shard, shards):
             continue
         loose = target.endswith(LOOSE)
         real = target[: -len(LOOSE)] if loose else target
-        root = next((r for r in ("/n/netscratch/ydu_lab/Lab", "/n/netscratch/ydu_lab/Everyone")
-                     if real.startswith(r + "/")), os.path.dirname(real))
+        root = next((r for r in (roots or ("/n/netscratch/ydu_lab/Lab",
+                                            "/n/netscratch/ydu_lab/Everyone"))
+                     if real.startswith(r.rstrip("/") + "/")), os.path.dirname(real))
         st = states.get(root)
         if st is None:
-            st = {"root": root, "entries": [], "scanned": 0, "total_dirs": None,
+            try:
+                ntop = sum(1 for e in os.scandir(root) if e.is_dir(follow_symlinks=False))
+            except OSError:
+                ntop = None
+            st = {"root": root, "entries": [], "scanned": 0, "total_dirs": ntop,
                   "complete": False, "error": None, "partial_targets": True}
             states[root] = st
             RESULT["roots"].append(st)
         name = os.path.relpath(real, root) + (LOOSE if loose else "")
         t0 = time.time()
+        try:
+            next(iter(os.scandir(real)), None)
+        except PermissionError:
+            st["entries"].append({"dir": name, "dir_owner": owner_of(real), "by": {},
+                                  "bytes": None, "files": None, "complete": False,
+                                  "unreadable": True, "error": None, "seconds": 0.0})
+            st["scanned"] = len(st["entries"])
+            write(out_path)
+            print(f"  {name:<40} UNREADABLE (private directory), not counted", flush=True)
+            continue
+        except OSError:
+            pass
         by, ok, err = walk(real, loose=loose)
         entry = {"dir": name, "dir_owner": owner_of(real),
                  "by": {g: {u: {"bytes": v[0], "files": v[1]} for u, v in us.items()}
@@ -222,7 +239,8 @@ def main():
     if args.paths_file:
         with open(args.paths_file) as fh:
             paths = [l.strip() for l in fh if l.strip()]
-        scan_paths(paths, out_path, args.shard, args.shards)
+        scan_paths(paths, out_path, args.shard, args.shards, roots=args.roots)
+        args.roots = []          # roots only scope the targets in this mode
     for root in args.roots:
         print(f"[{datetime.now():%H:%M:%S}] scanning {root}", flush=True)
         state = {"root": root, "entries": [], "scanned": 0, "total_dirs": None,

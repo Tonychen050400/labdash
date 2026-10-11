@@ -1127,7 +1127,11 @@ def load_ownerscan(out_dir):
     shape.
     """
     docs = []
-    d = os.path.join(out_dir, "owner_shards")
+    # owner_current -> the newest COMPLETE run (ownerscan_submit.sh publishes only
+    # whole snapshots). owner_shards/ is the pre-snapshot layout, read only until
+    # the first published run exists.
+    cur = os.path.join(out_dir, "owner_current", "owner_shards")
+    d = cur if os.path.isdir(cur) else os.path.join(out_dir, "owner_shards")
     try:
         names = sorted(f for f in os.listdir(d) if f.endswith(".json"))
     except OSError:
@@ -1278,6 +1282,16 @@ def _group_tables_section(scan, snap):
             flags += f' <span class="pill pill--warn" title="{esc(", ".join(unreadable[:8]))}">{len(unreadable)} unreadable</span>'
         if incomplete:
             flags += f' <span class="pill pill--warn" title="{esc(", ".join(incomplete[:8]))}">{len(incomplete)} incomplete</span>'
+        age_h = None
+        try:
+            age_h = (datetime.now(timezone.utc) - datetime.fromisoformat(scan["generated_at"])).total_seconds() / 3600
+        except (KeyError, TypeError, ValueError):
+            pass
+        if age_h is not None and age_h > 36:
+            # The scan is daily; past a day and a half the per-person numbers no
+            # longer describe the quota beside them -- say so on the table itself.
+            flags += (f' <span class="pill pill--crit">scan is {age_h/24:.1f} days old'
+                      f' &mdash; people may have moved or deleted data since</span>')
         if not all(r.get("complete") for r in scan["roots"]):
             done = sum(r.get("scanned", 0) for r in scan["roots"])
             want = sum(r.get("total_dirs") or 0 for r in scan["roots"])
@@ -1287,7 +1301,7 @@ def _group_tables_section(scan, snap):
   <header class="panel__head">
     <div>
       <h3>/n/netscratch ({esc(g)})</h3>
-      <p class="stamp">{len(rows)} people &middot; {esc(fmt_bytes(total if rows else 0))} billed to <b>{esc(g)}</b> in these trees{quota_txt}{gap_txt}{flags}</p>
+      <p class="stamp">{len(rows)} people &middot; {esc(fmt_bytes(total if rows else 0))} billed to <b>{esc(g)}</b> in these trees, scanned {esc(scan.get("generated_local") or "?")}{quota_txt}{gap_txt}{flags}</p>
     </div>
     <div class="controls">
       <input class="filter" type="search" placeholder="Find a name&hellip;"

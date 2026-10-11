@@ -93,3 +93,20 @@
 #SCRON --job-name=roster
 #SCRON --output=/dev/null
 30 2 * * * LABDASH_GROUPS="ydu_lab kempner_ydu_lab" $HOME/projects/labdash/py.sh $HOME/projects/labdash/roster.py --out /n/holylabs/LABS/kempner_ydu_lab/Lab/labdash
+
+# ---------------------------------------------------------------------------
+# Per-person, per-quota-group tables for /n/netscratch (ownerscan). Daily at 03:00,
+# an hour after the directory walk so the two are not hitting netscratch together.
+# This entry only SUBMITS: ownerscan_submit.sh plans ~1500 targets over 64 sapphire
+# tasks and a final job publishes the snapshot only if every task completed. The
+# tables were a one-off scan for two days before this line existed, and showed a
+# member 4 TiB they had already moved -- the page now flags a scan older than 36h.
+# ---------------------------------------------------------------------------
+#SCRON --partition=shared
+#SCRON --account=ydu_lab
+#SCRON --cpus-per-task=1
+#SCRON --mem=2G
+#SCRON --time=00:15:00
+#SCRON --job-name=ownerscan_submit
+#SCRON --output=/dev/null
+0 3 * * * LABDASH_OUT=/n/holylabs/LABS/kempner_ydu_lab/Lab/labdash LABDASH_ACCOUNT=ydu_lab $HOME/projects/labdash/ownerscan_submit.sh
