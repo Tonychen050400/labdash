@@ -37,7 +37,7 @@ want=\$(cat $RUN/targets.*.txt | grep -c .)
 got=\$($PY -c \"import json,glob;print(sum(len(r['entries']) for f in glob.glob('$RUN/owner_shards/*.json') for r in json.load(open(f))['roots']))\")
 echo \"run $RUN: tasks not completed=\$bad, targets \$got/\$want\"
 if [ \"\$bad\" -eq 0 ] && [ \"\$got\" -ge \"\$want\" ]; then
-  echo $(date -Is) > $RUN/COMPLETE; ln -sfn $RUN $OUT/owner_current.tmp && mv -T $OUT/owner_current.tmp $OUT/owner_current
+  date -Is > $RUN/COMPLETE; ln -sfn $RUN $OUT/owner_current.tmp && mv -T $OUT/owner_current.tmp $OUT/owner_current
   chmod -R a+rX $RUN; echo published
   ls -1d $OUT/owner_runs/*/ | head -n -3 | xargs -r rm -rf   # keep the newest three
 else echo 'NOT published: keeping the previous snapshot'; fi")
