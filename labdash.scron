@@ -45,25 +45,11 @@
 */15 * * * * LABDASH_OUT=/n/holylabs/LABS/kempner_ydu_lab/Lab/labdash LABDASH_PUBLISH=git $HOME/projects/labdash/run.sh
 
 # ---------------------------------------------------------------------------
-# Per-directory scan. This cron entry only SUBMITS the real work: the walk is
-# parallel across top-level directories, so it runs as a 32-task array on sapphire
-# rather than one long serial job. Sequential holylabs took 87 min; the array's
-# wall clock is set by the single slowest directory instead (~13 min there).
-# Shards write separate files and labdash unions them by directory name at render.
-# netscratch is NOT walked here any more: ownerscan (03:00) covers it per file owner
-# and quota group, and the lab asked for this directory-owner version to go.
-# Daily is not a compromise here: the per-user quota data it sits beside is itself
-# a nightly scan, so polling harder would surface no new information.
-# 02:00 keeps it clear of the working day.
-# ---------------------------------------------------------------------------
-#SCRON --partition=shared
-#SCRON --account=ydu_lab
-#SCRON --cpus-per-task=1
-#SCRON --mem=2G
-#SCRON --time=00:10:00
-#SCRON --job-name=dirscan_submit
-#SCRON --output=/dev/null
-0 2 * * * cd $HOME/projects/labdash && LABDASH_OUT=/n/holylabs/LABS/kempner_ydu_lab/Lab/labdash LABDASH_ROOTS="/n/holylabs/LABS/ydu_lab/Lab /n/holylabs/LABS/ydu_lab/Everyone /n/holylabs/LABS/kempner_ydu_lab/Lab /n/holylabs/LABS/kempner_ydu_lab/Everyone /n/lab_storage/ydu_lab" sbatch --parsable --account=ydu_lab dirscan_array.sbatch
+# The per-directory walk (dirscan_array.sbatch, formerly daily at 02:00) is retired
+# as of 2026-10-12. Every storage card now has a per-file-owner table from the owner
+# scan below, so the directory-owner tables it fed were removed at the lab's request,
+# and it was walking lab_storage for hours beside the owner scan for nothing. Its
+# old shard files stay on disk only as first-walk timing hints for the planner.
 
 # ---------------------------------------------------------------------------
 # Storage alert to Slack. Once a day, in the morning - NOT on the 15-minute
