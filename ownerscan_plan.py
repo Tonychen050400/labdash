@@ -35,7 +35,14 @@ def prev_seconds(prev, out=None):
             try:
                 for r in json.load(open(f)).get("roots", []):
                     for e in r.get("entries", []):
-                        k = os.path.join(r["root"], e.get("dir") or "").rstrip("/.").rstrip("/")
+                        d = e.get("dir") or ""
+                        # "<dir>/." is only the files sitting directly in <dir>: a
+                        # sub-second listing. Keyed as <dir> it overwrote that
+                        # directory's real time (4 h became 0.1 s) and the planner
+                        # stopped splitting it.
+                        if d.endswith("/.") or d == ".":
+                            continue
+                        k = os.path.join(r["root"], d).rstrip("/")
                         sec[k] = max(sec.get(k, 0), e.get("seconds") or 0)
             except (OSError, json.JSONDecodeError, TypeError):
                 pass
