@@ -14,16 +14,30 @@ import argparse, glob, heapq, json, os
 
 SPLIT_S = 1800
 UNKNOWN_S = 30
+MAX_DEPTH = 4        # levels below a top-level dir we are willing to split into
 
 
-def prev_seconds(prev):
+def prev_seconds(prev, out=None):
+    """Seconds per directory, from every timing source we have.
+
+    The first walk of a tree has no ownerscan history, and planning it blind put
+    several 3-6 hour lab_storage directories in series on one shard. So: the last
+    published ownerscan run, any newer unpublished runs (a run that timed out still
+    recorded what it finished), and the directory walk's own du timings, which
+    cover the same trees. The largest figure seen for a path wins.
+    """
+    files = glob.glob(os.path.join(prev, "owner_shards", "*.json")) if prev else []
+    if out:
+        files += glob.glob(os.path.join(out, "owner_runs", "*", "owner_shards", "*.json"))
+        files += glob.glob(os.path.join(out, "shards", "dirscan.*.json"))
     sec = {}
-    for f in glob.glob(os.path.join(prev, "owner_shards", "*.json")) if prev else []:
+    for f in files:
         try:
             for r in json.load(open(f)).get("roots", []):
                 for e in r.get("entries", []):
-                    sec[os.path.join(r["root"], e["dir"])] = e.get("seconds") or 0
-        except (OSError, json.JSONDecodeError):
+                    k = os.path.join(r["root"], e.get("dir") or "").rstrip("/.").rstrip("/")
+                    sec[k] = max(sec.get(k, 0), e.get("seconds") or 0)
+        except (OSError, json.JSONDecodeError, TypeError):
             pass
     return sec
 
@@ -41,8 +55,41 @@ def main():
     ap.add_argument("--prev")
     ap.add_argument("--shards", type=int, default=64)
     ap.add_argument("--roots", nargs="+", required=True)
+    ap.add_argument("--out", help="labdash output dir, for unpublished runs and du timings")
     a = ap.parse_args()
-    sec = prev_seconds(a.prev)
+    sec = prev_seconds(a.prev, a.out)
+    keys = sorted(sec)
+
+    def known(p):
+        """Recorded seconds for p, else the sum recorded for anything under it."""
+        if p in sec:
+            return sec[p]
+        import bisect
+        i, tot = bisect.bisect_left(keys, p + "/"), 0
+        while i < len(keys) and keys[i].startswith(p + "/"):
+            tot += sec[keys[i]]
+            i += 1
+        return tot or None
+
+    est = {}
+
+    def expand(p, depth, inherited=None):
+        """Split p while it is slow. A child with no timing of its own gets an equal
+        share of its parent's: estimating each at UNKNOWN_S would turn one 6-hour
+        directory into forty 30-second ones and the balancer would stack them."""
+        c = known(p)
+        if c is None:
+            c = inherited
+        if c is not None and c > SPLIT_S and depth < MAX_DEPTH:
+            kids = dirs(p)
+            if kids:
+                out = [p + "/."]
+                for k in kids:
+                    out += expand(k, depth + 1, c / len(kids))
+                return out
+        est[p] = c if c is not None else UNKNOWN_S
+        return [p]
+
     targets = []
     for root in a.roots:
         for top in dirs(root) or []:
@@ -52,12 +99,12 @@ def main():
                 continue
             targets.append(top + "/.")
             for k in kids:
-                if sec.get(k, 0) > SPLIT_S and (grand := dirs(k)):
-                    targets += [k + "/."] + grand
-                else:
-                    targets.append(k)
-    cost = lambda t: sec.get(t.rstrip("/").removesuffix("/."), UNKNOWN_S) if t.endswith("/.") \
-        else sec.get(t, UNKNOWN_S)
+                targets += expand(k, 1)
+
+    def cost(t):
+        if t.endswith("/."):
+            return 1.0                       # loose files: one directory listing
+        return est.get(t, UNKNOWN_S)
     heap = [(0.0, k, []) for k in range(a.shards)]
     for t in sorted(targets, key=cost, reverse=True):
         load, k, lst = heapq.heappop(heap)

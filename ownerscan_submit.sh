@@ -31,10 +31,10 @@ fi
 RUN="$OUT/owner_runs/$(date +%Y%m%d-%H%M)"
 PREV=$(readlink -f "$OUT/owner_current" 2>/dev/null || true)
 mkdir -p "$RUN" "$HERE/logs"
-"$PY" "$HERE/ownerscan_plan.py" --run "$RUN" ${PREV:+--prev "$PREV"} --shards "$SHARDS" --roots "${ROOTS[@]}" || exit 1
+"$PY" "$HERE/ownerscan_plan.py" --run "$RUN" --out "$OUT" ${PREV:+--prev "$PREV"} --shards "$SHARDS" --roots "${ROOTS[@]}" || exit 1
 
 ARR=$(sbatch --parsable --account="$ACCT" --partition=sapphire --array=0-$((SHARDS-1)) \
-  --cpus-per-task=1 --mem=4G --time=10:00:00 --job-name=ownerscan \
+  --cpus-per-task=1 --mem=4G --time=1-00:00:00 --job-name=ownerscan \
   --output="$HERE/logs/ownerscan_%A_%a.log" \
   --wrap="$PY $HERE/ownerscan.py --out $RUN --paths-file $RUN/targets.\$SLURM_ARRAY_TASK_ID.txt --shard 0 --shards 1 --roots ${ROOTS[*]}") || exit 1
 # Publish only a complete snapshot: every task COMPLETED and every target recorded.
