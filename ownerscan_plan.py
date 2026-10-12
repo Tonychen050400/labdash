@@ -18,27 +18,35 @@ MAX_DEPTH = 4        # levels below a top-level dir we are willing to split into
 
 
 def prev_seconds(prev, out=None):
-    """Seconds per directory, from every timing source we have.
+    """Seconds per directory, to plan the split and the balance -- never counted.
 
-    The first walk of a tree has no ownerscan history, and planning it blind put
-    several 3-6 hour lab_storage directories in series on one shard. So: the last
-    published ownerscan run, any newer unpublished runs (a run that timed out still
-    recorded what it finished), and the directory walk's own du timings, which
-    cover the same trees. The largest figure seen for a path wins.
+    Only how LONG a directory takes to walk is borrowed here, which depends on its
+    file count and the filer, not on how bytes are attributed. Precedence: the
+    owner scan's own timings (published run first, then newer unpublished ones,
+    since a run that timed out still recorded what it finished); the old directory
+    walk's du timings fill in only paths the owner scan has never measured, so a
+    first walk of a tree is not planned blind -- and once the owner scan has
+    measured a path, the old figures stop mattering, even though their files stay
+    on disk.
     """
-    files = glob.glob(os.path.join(prev, "owner_shards", "*.json")) if prev else []
-    if out:
-        files += glob.glob(os.path.join(out, "owner_runs", "*", "owner_shards", "*.json"))
-        files += glob.glob(os.path.join(out, "shards", "dirscan.*.json"))
-    sec = {}
-    for f in files:
-        try:
-            for r in json.load(open(f)).get("roots", []):
-                for e in r.get("entries", []):
-                    k = os.path.join(r["root"], e.get("dir") or "").rstrip("/.").rstrip("/")
-                    sec[k] = max(sec.get(k, 0), e.get("seconds") or 0)
-        except (OSError, json.JSONDecodeError, TypeError):
-            pass
+    def read(files):
+        sec = {}
+        for f in files:
+            try:
+                for r in json.load(open(f)).get("roots", []):
+                    for e in r.get("entries", []):
+                        k = os.path.join(r["root"], e.get("dir") or "").rstrip("/.").rstrip("/")
+                        sec[k] = max(sec.get(k, 0), e.get("seconds") or 0)
+            except (OSError, json.JSONDecodeError, TypeError):
+                pass
+        return sec
+    published = read(glob.glob(os.path.join(prev, "owner_shards", "*.json")) if prev else [])
+    newer = read(glob.glob(os.path.join(out, "owner_runs", "*", "owner_shards", "*.json"))
+                 if out else [])
+    old_walk = read(glob.glob(os.path.join(out, "shards", "dirscan.*.json")) if out else [])
+    sec = dict(old_walk)
+    sec.update(newer)
+    sec.update(published)
     return sec
 
 
