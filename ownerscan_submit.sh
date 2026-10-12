@@ -19,6 +19,15 @@ if [ -n "${LABDASH_OWNER_ROOTS:-}" ]; then read -ra ROOTS <<< "$LABDASH_OWNER_RO
   ROOTS=(); for g in $GROUP_LIST; do for d in /n/netscratch/$g/Lab /n/netscratch/$g/Users /n/netscratch/$g/Everyone; do [ -d "$d" ] && ROOTS+=("$d"); done; done; fi
 [ ${#ROOTS[@]} -gt 0 ] || { echo "ownerscan_submit: no roots" >&2; exit 1; }
 
+# One run at a time. The first lab_storage walk ran past the next 03:00 firing;
+# a second full run on top of it doubles the metadata load on shared filers and
+# races for the same publish step. If one is still queued or running, skip --
+# tomorrow's firing picks up.
+if squeue --me -h -o '%j' | grep -qxE 'ownerscan|ownerscan_publish'; then
+  echo "ownerscan_submit: previous run still in the queue, not starting another"
+  exit 0
+fi
+
 RUN="$OUT/owner_runs/$(date +%Y%m%d-%H%M)"
 PREV=$(readlink -f "$OUT/owner_current" 2>/dev/null || true)
 mkdir -p "$RUN" "$HERE/logs"
