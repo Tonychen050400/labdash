@@ -50,6 +50,8 @@
 # rather than one long serial job. Sequential holylabs took 87 min; the array's
 # wall clock is set by the single slowest directory instead (~13 min there).
 # Shards write separate files and labdash unions them by directory name at render.
+# netscratch is NOT walked here any more: ownerscan (03:00) covers it per file owner
+# and quota group, and the lab asked for this directory-owner version to go.
 # Daily is not a compromise here: the per-user quota data it sits beside is itself
 # a nightly scan, so polling harder would surface no new information.
 # 02:00 keeps it clear of the working day.
@@ -61,7 +63,7 @@
 #SCRON --time=00:10:00
 #SCRON --job-name=dirscan_submit
 #SCRON --output=/dev/null
-0 2 * * * cd $HOME/projects/labdash && LABDASH_OUT=/n/holylabs/LABS/kempner_ydu_lab/Lab/labdash LABDASH_ROOTS="/n/holylabs/LABS/ydu_lab/Lab /n/holylabs/LABS/ydu_lab/Everyone /n/holylabs/LABS/kempner_ydu_lab/Lab /n/holylabs/LABS/kempner_ydu_lab/Everyone /n/lab_storage/ydu_lab /n/netscratch/ydu_lab/Lab /n/netscratch/ydu_lab/Everyone" sbatch --parsable --account=ydu_lab dirscan_array.sbatch
+0 2 * * * cd $HOME/projects/labdash && LABDASH_OUT=/n/holylabs/LABS/kempner_ydu_lab/Lab/labdash LABDASH_ROOTS="/n/holylabs/LABS/ydu_lab/Lab /n/holylabs/LABS/ydu_lab/Everyone /n/holylabs/LABS/kempner_ydu_lab/Lab /n/holylabs/LABS/kempner_ydu_lab/Everyone /n/lab_storage/ydu_lab" sbatch --parsable --account=ydu_lab dirscan_array.sbatch
 
 # ---------------------------------------------------------------------------
 # Storage alert to Slack. Once a day, in the morning - NOT on the 15-minute

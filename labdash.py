@@ -695,7 +695,8 @@ def render(snap, history, fragment=False, dirscan=None, gpu_guide=None, ownersca
         _rules_section(snap, gpu_guide),
         _storage_section(snap, history),
         _group_tables_section(ownerscan, snap),
-        _dirscan_section(dirscan, snap.get("folders") or [], snap),
+        _dirscan_section(dirscan, snap.get("folders") or [], snap,
+                         replaced=_owner_scanned_folders(ownerscan)),
         _compute_section(snap, gpu_guide),
         _jobs_section(snap),
         _footer(snap),
@@ -1345,13 +1346,28 @@ def _group_tables_section(scan, snap):
 </section>"""
 
 
-def _dirscan_section(scan, folders=(), snap=None):
-    """The breakdown `quota` cannot give: who holds what inside one folder."""
+def _owner_scanned_folders(ownerscan):
+    """Folders the per-group owner tables already cover."""
+    return {_display_folder(r["root"]) for r in (ownerscan or {}).get("roots", [])
+            if r.get("root")}
+
+
+def _dirscan_section(scan, folders=(), snap=None, replaced=()):
+    """The breakdown `quota` cannot give: who holds what inside one folder.
+
+    Folders in `replaced` are skipped: the per-group owner tables show them by file
+    owner and quota group, and the lab asked for the directory-owner version to go
+    -- two tables of the same folder disagreeing (one put a member at 26 TiB the
+    day they had nothing left in the group) is worse than one.
+    """
     grouped = {}
     for r in (scan or {}).get("roots", []):
-        grouped.setdefault(_display_folder(r["root"]), []).append(r)
+        f = _display_folder(r["root"])
+        if f not in replaced:
+            grouped.setdefault(f, []).append(r)
     for f in folders:
-        grouped.setdefault(f, [])
+        if f not in replaced:
+            grouped.setdefault(f, [])
     if not grouped:
         return ""
 
