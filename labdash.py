@@ -1225,7 +1225,11 @@ def _group_tables_section(scan, snap):
             unreadable += [prefix + d for d in r.get("unreadable", [])]
             # Classify against the walked root, before the display prefix: a
             # private directory directly under Lab/ hides a whole person.
-            whole += [prefix + d for d in r.get("unreadable", []) if "/" not in d.rstrip("/")]
+            # lab_storage's root holds people's folders AND a Lab/ of them, so
+            # Lab/<person> is a whole user folder too.
+            whole += [prefix + d for d in r.get("unreadable", [])
+                      if "/" not in d.rstrip("/")
+                      or (d.split("/")[0] in SUBTREES and d.rstrip("/").count("/") == 1)]
             incomplete += [prefix + d for d in r.get("incomplete", [])]
             for e in r.get("entries", []):
                 for grp_, users in (e.get("by") or {}).items():
