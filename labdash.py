@@ -1215,7 +1215,7 @@ def _group_tables_section(scan, snap):
         if not roots:
             continue                      # nothing walked for this card
         covered.add(path)
-        per, unreadable, incomplete = {}, [], []
+        per, unreadable, incomplete, whole = {}, [], [], []
         for r in roots:
             leaf = os.path.basename((r.get("root") or "").rstrip("/"))
             base = _display_folder(r["root"])
@@ -1223,6 +1223,9 @@ def _group_tables_section(scan, snap):
             if prefix.startswith("."):
                 prefix = f"{leaf}/" if leaf in SUBTREES else ""
             unreadable += [prefix + d for d in r.get("unreadable", [])]
+            # Classify against the walked root, before the display prefix: a
+            # private directory directly under Lab/ hides a whole person.
+            whole += [prefix + d for d in r.get("unreadable", []) if "/" not in d.rstrip("/")]
             incomplete += [prefix + d for d in r.get("incomplete", [])]
             for e in r.get("entries", []):
                 for grp_, users in (e.get("by") or {}).items():
@@ -1291,8 +1294,7 @@ def _group_tables_section(scan, snap):
             + ("in the quota but not found here" if gap > 0
                else "more here than the quota report shows (it lags deletions)"))
         flags = ""
-        whole = [u for u in unreadable if u.count("/") <= 1]
-        sub = [u for u in unreadable if u.count("/") > 1]
+        sub = [u for u in unreadable if u not in set(whole)]
         if whole:
             flags += f' <span class="pill pill--warn" title="{esc(", ".join(whole[:12]))}">{len(whole)} private user folder{"s" if len(whole) != 1 else ""}</span>'
         if sub:
