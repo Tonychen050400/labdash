@@ -41,6 +41,7 @@ DEFAULT_FOLDERS = ["/n/holylabs/LABS/{group}", "/n/netscratch/{group}",
                    "/n/lab_storage/{group}"]
 HISTORY_KEEP = 4032  # ~4 weeks at one sample per 10 min
 TOP_ROWS = 15        # leaderboard rows shown before the tail is collapsed
+DETAIL_ROWS = 25     # directories listed under one person before "N more"
 
 # --------------------------------------------------------------------------
 # shell helpers
@@ -1257,7 +1258,9 @@ def _group_tables_section(scan, snap):
         for i, o in enumerate(rows):
             share = o["bytes"] / (total or 1)
             parts = sorted(o["parts"].values(), key=lambda x: -x["bytes"])
-            dirs = ", ".join(p["dir"] for p in parts)
+            # Shown and searched: the top directories only. All of them went into
+            # data-user, and one member's ran to 4 MiB of a 5 MiB page.
+            dirs = ", ".join(p["dir"] for p in parts[:DETAIL_ROWS])
             extra = " is-extra" if i >= TOP_ROWS else ""
             multi = len(parts) > 1
             name = (f'<button class="disclose" type="button" aria-expanded="false">'
@@ -1274,12 +1277,22 @@ def _group_tables_section(scan, snap):
   <td class="num dim">{esc(fmt_int(o['files']))}</td>
 </tr>""")
             if multi:
+                # The list says where the space is, not every directory: one member
+                # owning files in 65k dataset folders made this a 20 MiB page.
+                shown, rest = parts[:DETAIL_ROWS], parts[DETAIL_ROWS:]
                 items = "".join(
                     f'<li><span class="mono">{esc(pt["dir"])}</span>'
                     f'<span class="pbar">{bar(pt["bytes"] / (o["bytes"] or 1))}</span>'
                     f'<b>{esc(fmt_bytes(pt["bytes"]))}</b>'
                     f'<span class="dim">{esc(fmt_int(pt["files"]))} files</span></li>'
-                    for pt in parts)
+                    for pt in shown)
+                if rest:
+                    rb = sum(pt["bytes"] for pt in rest)
+                    items += (f'<li><span class="mono dim">&hellip; {fmt_int(len(rest))} more '
+                              f'director{"y" if len(rest) == 1 else "ies"}</span>'
+                              f'<span class="pbar">{bar(rb / (o["bytes"] or 1))}</span>'
+                              f'<b>{esc(fmt_bytes(rb))}</b>'
+                              f'<span class="dim">{esc(fmt_int(sum(pt["files"] for pt in rest)))} files</span></li>')
                 body.append(f'<tr class="detail{extra}" hidden><td></td>'
                             f'<td colspan="6"><ul class="parts">{items}</ul></td></tr>')
 

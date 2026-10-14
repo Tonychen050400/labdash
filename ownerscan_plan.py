@@ -15,6 +15,10 @@ import argparse, glob, heapq, json, os
 SPLIT_S = 1800
 UNKNOWN_S = 30
 MAX_DEPTH = 4        # levels below a top-level dir we are willing to split into
+# Never split a directory into more pieces than this. A dataset with one folder per
+# object (lab_storage .../akiruga/datasets/srn_nmr_*, ~36k each) turned one night's
+# plan into 76,779 targets, a 20 MiB page, and failing Pages deploys.
+MAX_FANOUT = 200
 
 
 def prev_seconds(prev, out=None):
@@ -97,7 +101,7 @@ def main():
             c = inherited
         if c is not None and c > SPLIT_S and depth < MAX_DEPTH:
             kids = dirs(p)
-            if kids:
+            if kids and len(kids) <= MAX_FANOUT:
                 out = [p + "/."]
                 for k in kids:
                     out += expand(k, depth + 1, c / len(kids))
