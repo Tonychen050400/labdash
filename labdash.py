@@ -1277,24 +1277,26 @@ def _group_tables_section(scan, snap):
   <td class="num dim">{esc(fmt_int(o['files']))}</td>
 </tr>""")
             if multi:
-                # The list says where the space is, not every directory: one member
-                # owning files in 65k dataset folders made this a 20 MiB page.
+                # One real table row per directory, so size, bar, share and files
+                # sit under the same columns as the person's row above. They used to
+                # share one spanning cell with its own grid, where a long path ran
+                # into its bar. The list says where the space is, not every
+                # directory: one member owning files in 65k dataset folders made
+                # this a 20 MiB page, hence the top DETAIL_ROWS and one "N more".
                 shown, rest = parts[:DETAIL_ROWS], parts[DETAIL_ROWS:]
-                items = "".join(
-                    f'<li><span class="mono">{esc(pt["dir"])}</span>'
-                    f'<span class="pbar">{bar(pt["bytes"] / (o["bytes"] or 1))}</span>'
-                    f'<b>{esc(fmt_bytes(pt["bytes"]))}</b>'
-                    f'<span class="dim">{esc(fmt_int(pt["files"]))} files</span></li>'
-                    for pt in shown)
+                def drow(label, nbytes, nfiles, cls="mono"):
+                    return (f'<tr class="detail{extra}" hidden><td></td>'
+                            f'<td colspan="2" class="{cls} cell-dir" title="{esc(label)}">{esc(label)}</td>'
+                            f'<td class="num dim" data-sort="{nbytes}">{esc(fmt_bytes(nbytes))}</td>'
+                            f'<td class="cell-bar">{bar(nbytes / peak)}</td>'
+                            f'<td class="num dim">{nbytes / (total or 1) * 100:.1f}%</td>'
+                            f'<td class="num dim">{esc(fmt_int(nfiles))}</td></tr>')
+                for pt in shown:
+                    body.append(drow(pt["dir"], pt["bytes"], pt["files"]))
                 if rest:
-                    rb = sum(pt["bytes"] for pt in rest)
-                    items += (f'<li><span class="mono dim">&hellip; {fmt_int(len(rest))} more '
-                              f'director{"y" if len(rest) == 1 else "ies"}</span>'
-                              f'<span class="pbar">{bar(rb / (o["bytes"] or 1))}</span>'
-                              f'<b>{esc(fmt_bytes(rb))}</b>'
-                              f'<span class="dim">{esc(fmt_int(sum(pt["files"] for pt in rest)))} files</span></li>')
-                body.append(f'<tr class="detail{extra}" hidden><td></td>'
-                            f'<td colspan="6"><ul class="parts">{items}</ul></td></tr>')
+                    body.append(drow(f'... {fmt_int(len(rest))} more director{"y" if len(rest) == 1 else "ies"}',
+                                     sum(pt["bytes"] for pt in rest),
+                                     sum(pt["files"] for pt in rest), cls="dim"))
 
         walk_done = all(r.get("complete") for r in roots)
         pct = q["used_bytes"] / q["quota_bytes"] * 100
@@ -2159,6 +2161,9 @@ code{font-family:var(--mono); font-size:.86em; background:var(--surface-3);
 .count{font-size:.66rem; color:var(--ink-3); background:var(--surface-3);
   border-radius:8px; padding:0 5px}
 tr.detail td{background:var(--surface-2); padding:0}
+tr.detail td.cell-dir, tr.detail td.num, tr.detail td.cell-bar{padding:5px 12px; font-size:.8rem}
+tr.detail td{vertical-align:middle}
+tr.detail td.cell-dir{padding-left:28px; white-space:normal; overflow-wrap:anywhere}
 .parts{list-style:none; margin:0; padding:6px 0 10px}
 .parts li{display:grid; grid-template-columns:minmax(10ch,22ch) 90px auto 11ch;
   gap:12px; align-items:center; padding:4px 12px; font-size:.82rem}
@@ -2280,8 +2285,9 @@ def _script():
         // have to travel with it, or sorting scatters them across the table.
         var pairs = rows.filter(function (r) { return !r.classList.contains('detail'); })
           .map(function (r) {
-            var d = r.nextElementSibling;
-            return [r, (d && d.classList.contains('detail')) ? d : null];
+            var ds = [], d = r.nextElementSibling;
+            while (d && d.classList.contains('detail')) { ds.push(d); d = d.nextElementSibling; }
+            return [r, ds];
           });
         pairs.sort(function (a, b) {
           var x = a[0].cells[idx], y = b[0].cells[idx];
@@ -2292,7 +2298,7 @@ def _script():
         });
         pairs.forEach(function (p) {
           body.appendChild(p[0]);
-          if (p[1]) body.appendChild(p[1]);
+          p[1].forEach(function (d) { body.appendChild(d); });
         });
       }
       th.addEventListener('click', sort);
@@ -2306,10 +2312,13 @@ def _script():
   document.querySelectorAll('.disclose').forEach(function (btn) {
     btn.addEventListener('click', function () {
       var row = btn.closest('tr');
-      var detail = row && row.nextElementSibling;
-      if (!detail || !detail.classList.contains('detail')) return;
-      var open = detail.hasAttribute('hidden');
-      if (open) { detail.removeAttribute('hidden'); } else { detail.setAttribute('hidden', ''); }
+      var details = [], d = row && row.nextElementSibling;
+      while (d && d.classList.contains('detail')) { details.push(d); d = d.nextElementSibling; }
+      if (!details.length) return;
+      var open = details[0].hasAttribute('hidden');
+      details.forEach(function (x) {
+        if (open) { x.removeAttribute('hidden'); } else { x.setAttribute('hidden', ''); }
+      });
       btn.setAttribute('aria-expanded', open ? 'true' : 'false');
     });
   });
