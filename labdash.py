@@ -303,13 +303,55 @@ def collect_fairshare(accounts):
     return res
 
 
+# FASRC's `quota` reads this report for VAST filesystems. A group can hold several
+# records on one path, and when none is flagged accountable `quota` prints whichever
+# comes first: on 2026-10-16 ydu_lab had both a 100 TiB and a 50 TiB record on
+# netscratch, and the page showed 100 because of record order (a week earlier the
+# order was reversed and it showed 50).
+VAST_GROUP_QUOTAS = "/n/holylabs/rc_admin/vast_quota_data/vast-quotas.json"
+_vast_cache = None
+
+
+def _vast_records(group, path):
+    """Every VAST quota record for (group, filesystem), as the quota tool matches them."""
+    global _vast_cache
+    if _vast_cache is None:
+        try:
+            with open(VAST_GROUP_QUOTAS) as fh:
+                _vast_cache = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            _vast_cache = []
+    try:
+        import grp as _grp
+        gid = str(_grp.getgrnam(group).gr_gid)
+    except (KeyError, ImportError):
+        gid = None
+    out = []
+    for q in _vast_cache:
+        e = q.get("entity") or {}
+        if not path.endswith(q.get("path") or "\0"):
+            continue
+        if (e.get("identifier_type") == "gid" and e.get("identifier") == gid) or \
+           (e.get("identifier_type") == "groupname" and e.get("identifier") == group):
+            out.append(q)
+    return out
+
+
 def collect_quota(group, path):
-    """Group quota on one filesystem."""
+    """Group quota on one filesystem.
+
+    Where the group has several VAST records here, the TIGHTEST limit is reported:
+    every quota is enforced, so the smallest is the one that stops writes. The card
+    says so and lists the others, rather than silently taking a side.
+    """
     out = run(quota_cmd("-g", group, path), timeout=60)
+    recs = _vast_records(group, path)
+    limits = sorted({r["hard_limit"] for r in recs if r.get("hard_limit")})
+    ilimits = sorted({r["hard_limit_inodes"] for r in recs if r.get("hard_limit_inodes")})
     for line in out.splitlines():
         cols = line.split()
         if len(cols) >= 3 and cols[0].startswith("/"):
-            return {
+            rec = {
                 "group": group,
                 "path": path,
                 "used_bytes": parse_size(cols[1]),
@@ -319,6 +361,12 @@ def collect_quota(group, path):
                 "updated": _quota_stamp(out),
                 "source": "quota",
             }
+            if len(limits) > 1:
+                rec["quota_records"] = limits
+                rec["quota_bytes"] = limits[0]
+                if ilimits:
+                    rec["file_quota"] = ilimits[0]
+            return rec
     return None
 
 
@@ -932,6 +980,7 @@ def _storage_section(snap, history):
     <div><dt>{'Files' if not files_pct else 'File count'}</dt><dd>{esc(fmt_int(s['files']))}{f" <span class='of'>of {esc(fmt_int(s['file_quota']))} ({files_pct:.0f}%)</span>" if files_pct else ''}</dd></div>
   </dl>
   {f'<div class="card__spark"><span class="spark__label">{esc(spark_label)}</span>{spark}</div>' if spark else ''}
+  {f'<p class="stamp"><b>{len(s["quota_records"])} quota records here</b> ({", ".join(esc(fmt_bytes(x)) for x in s["quota_records"])}); showing the tightest, since every one is enforced.</p>' if s.get("quota_records") else ''}
   <p class="stamp">Quota read {esc(s.get('updated') or 'unknown')}</p>
 </article>""")
 
