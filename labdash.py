@@ -337,17 +337,69 @@ def _vast_records(group, path):
     return out
 
 
+# Which of several records is current. FASRC's report carries no timestamps, so we
+# keep our own: every refresh records each record's limits, and when one changes we
+# note when. With several records the most recently CHANGED one is shown -- a limit
+# someone just set is the one that reflects the decision. Seeded 2026-10-16 with
+# ydu_lab's netscratch 50 TiB record as the newer of its two (the lab's stated
+# limit). A tie, e.g. two records first seen together, goes to the tightest.
+QUOTA_STATE_FILE = None          # set by main(): <out>/quota_records.json
+_qstate = None
+
+
+def _load_qstate():
+    global _qstate
+    if _qstate is None:
+        try:
+            with open(QUOTA_STATE_FILE) as fh:
+                _qstate = json.load(fh)
+        except (OSError, TypeError, json.JSONDecodeError):
+            _qstate = {}
+    return _qstate
+
+
+def _save_qstate():
+    if QUOTA_STATE_FILE and _qstate is not None:
+        tmp = QUOTA_STATE_FILE + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(_qstate, fh, indent=1, sort_keys=True)
+        os.replace(tmp, QUOTA_STATE_FILE)
+
+
+def _record_key(r):
+    e = r.get("entity") or {}
+    return f"{e.get('identifier_type')}:{e.get('identifier')}#{e.get('vast_id')}"
+
+
+def _current_record(group, path, recs):
+    """Track every record for (group, path) and return the current one plus the
+    tracked state for all of them (for the card)."""
+    st = _load_qstate().setdefault(f"{group}@{path}", {})
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    seen = set()
+    for r in recs:
+        k = _record_key(r)
+        seen.add(k)
+        prev = st.get(k)
+        lim = (r.get("hard_limit"), r.get("hard_limit_inodes"))
+        if prev is None or (prev.get("hard_limit"), prev.get("hard_limit_inodes")) != lim:
+            st[k] = {"hard_limit": lim[0], "hard_limit_inodes": lim[1], "changed_at": now,
+                     "first_seen": (prev or {}).get("first_seen", now)}
+    for k in [k for k in st if k not in seen]:
+        del st[k]                      # a record FASRC removed
+    best = max(recs, key=lambda r: (st[_record_key(r)]["changed_at"], -(r.get("hard_limit") or 0)))
+    return best, st
+
+
 def collect_quota(group, path):
     """Group quota on one filesystem.
 
-    Where the group has several VAST records here, the TIGHTEST limit is reported:
-    every quota is enforced, so the smallest is the one that stops writes. The card
-    says so and lists the others, rather than silently taking a side.
+    Where the group has several VAST records here, the one that CHANGED most
+    recently is reported (see _current_record). The card lists the others.
     """
     out = run(quota_cmd("-g", group, path), timeout=60)
-    recs = _vast_records(group, path)
-    limits = sorted({r["hard_limit"] for r in recs if r.get("hard_limit")})
-    ilimits = sorted({r["hard_limit_inodes"] for r in recs if r.get("hard_limit_inodes")})
+    recs = [r for r in _vast_records(group, path) if r.get("hard_limit")]
+    best, st = _current_record(group, path, recs) if recs else (None, {})
     for line in out.splitlines():
         cols = line.split()
         if len(cols) >= 3 and cols[0].startswith("/"):
@@ -361,11 +413,14 @@ def collect_quota(group, path):
                 "updated": _quota_stamp(out),
                 "source": "quota",
             }
-            if len(limits) > 1:
-                rec["quota_records"] = limits
-                rec["quota_bytes"] = limits[0]
-                if ilimits:
-                    rec["file_quota"] = ilimits[0]
+            if best is not None and len(recs) > 1:
+                rec["quota_bytes"] = best["hard_limit"]
+                if best.get("hard_limit_inodes"):
+                    rec["file_quota"] = best["hard_limit_inodes"]
+                rec["quota_records"] = sorted(
+                    ({"limit": r["hard_limit"], "changed_at": st[_record_key(r)]["changed_at"],
+                      "current": r is best} for r in recs),
+                    key=lambda x: x["changed_at"], reverse=True)
             return rec
     return None
 
@@ -980,7 +1035,7 @@ def _storage_section(snap, history):
     <div><dt>{'Files' if not files_pct else 'File count'}</dt><dd>{esc(fmt_int(s['files']))}{f" <span class='of'>of {esc(fmt_int(s['file_quota']))} ({files_pct:.0f}%)</span>" if files_pct else ''}</dd></div>
   </dl>
   {f'<div class="card__spark"><span class="spark__label">{esc(spark_label)}</span>{spark}</div>' if spark else ''}
-  {f'<p class="stamp"><b>{len(s["quota_records"])} quota records here</b> ({", ".join(esc(fmt_bytes(x)) for x in s["quota_records"])}); showing the tightest, since every one is enforced.</p>' if s.get("quota_records") else ''}
+  {f'<p class="stamp"><b>{len(s["quota_records"])} quota records here:</b> ' + ", ".join(f'{esc(fmt_bytes(x["limit"]))} (last changed {esc(x["changed_at"][:10])}){" &larr; shown" if x["current"] else ""}' for x in s["quota_records"]) + '. FASRC&#39;s report gives no dates, so we log every reading and show the most recently changed.</p>' if s.get("quota_records") else ''}
   <p class="stamp">Quota read {esc(s.get('updated') or 'unknown')}</p>
 </article>""")
 
@@ -2446,6 +2501,8 @@ def main():
         sys.exit("labdash: could not determine any Slurm account.")
     paths = [p for p in args.paths.split(",") if p] or DEFAULT_PATHS
 
+    global QUOTA_STATE_FILE
+    QUOTA_STATE_FILE = os.path.join(os.path.abspath(args.out), "quota_records.json")
     snap = build_snapshot(accounts, paths)
 
     if args.json:
@@ -2454,6 +2511,8 @@ def main():
         return
 
     out = os.path.abspath(args.out)
+    os.makedirs(out, exist_ok=True)
+    _save_qstate()
     os.makedirs(out, exist_ok=True)
     history = append_history(snap, os.path.join(out, "history.jsonl"))
 
