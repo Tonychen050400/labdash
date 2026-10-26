@@ -28,6 +28,7 @@ still leaves everything it finished.
 
 import argparse
 import json
+import re
 import os
 import pwd
 import subprocess
@@ -68,6 +69,17 @@ def walk(path, loose=False):
     walking its subdirectories as separate targets, so nothing goes uncounted)."""
     agg = {}
     depth = ["-maxdepth", "1"] if loose else []
+    starts = [path]
+    m = re.match(r"^(.*)#(\d+)/(\d+)$", path)
+    if m:                                  # one batch of a very wide directory
+        base, k, n = m.group(1), int(m.group(2)), int(m.group(3))
+        try:
+            kids = sorted(e.path for e in os.scandir(base) if e.is_dir(follow_symlinks=False))
+        except OSError as e:
+            return agg, False, str(e)
+        starts = [c for i, c in enumerate(kids) if i % n == k]
+        if not starts:
+            return agg, True, None
     # stderr goes to a file, never a pipe. A tree with many private subdirectories
     # makes find write one "Permission denied" line per directory; once a pipe's
     # 64 KB buffer filled, find blocked writing stderr while we blocked reading
@@ -76,7 +88,7 @@ def walk(path, loose=False):
     import tempfile
     errf = tempfile.TemporaryFile(mode="w+")
     try:
-        p = subprocess.Popen(["find", path] + depth + ["-type", "f", "-printf", "%g\t%u\t%s\n"],
+        p = subprocess.Popen(["find"] + starts + depth + ["-type", "f", "-printf", "%g\t%u\t%s\n"],
                              stdout=subprocess.PIPE, stderr=errf, text=True,
                              errors="replace")
     except OSError as e:
@@ -103,6 +115,9 @@ def walk(path, loose=False):
     errf.seek(0)
     err = errf.read().strip()
     errf.close()
+    # Every directory find could not enter, so the lab can ask its owner to open it.
+    denied = re.findall(r"find: ['\u2018](.+?)['\u2019]: Permission denied", err)
+    walk.denied = denied
     if timed_out:
         return agg, False, "timeout"
     # find exits 1 after printing everything it COULD reach when some subdirectory
@@ -157,6 +172,7 @@ def scan_root(root, state, out_path, shard, shards):
 
 
 LOOSE = "/."
+MAX_PRIVATE = 500        # private paths listed per target; the count beyond is kept
 
 
 def scan_paths(paths, out_path, shard, shards, roots=()):
@@ -164,11 +180,48 @@ def scan_paths(paths, out_path, shard, shards, roots=()):
     Each target is recorded under its parent root with dir = path relative to it;
     a target ending in /. counts only the files sitting directly in that directory."""
     states = {}
+    # Resume after a requeue: serial_requeue preempts, and a restarted task used to
+    # redo every target and leave its half-finished file beside the new one. Carry
+    # over whatever an earlier attempt of this same array task finished, skip it,
+    # and remove the earlier file once this one holds its entries.
+    done, earlier = set(), []
+    job = os.environ.get("SLURM_ARRAY_JOB_ID") or os.environ.get("SLURM_JOB_ID")
+    idx = int(os.environ.get("SLURM_ARRAY_TASK_ID") or shard)
+    if job:
+        import glob as _glob
+        for f in sorted(_glob.glob(os.path.join(os.path.dirname(out_path),
+                                                f"ownerscan.{job}a*.{idx:03d}.json"))):
+            if os.path.abspath(f) == os.path.abspath(out_path):
+                continue
+            try:
+                prior = json.load(open(f))
+            except (OSError, json.JSONDecodeError):
+                continue
+            earlier.append(f)
+            for r in prior.get("roots", []):
+                st = states.get(r["root"])
+                if st is None:
+                    st = dict(r, entries=[])
+                    states[r["root"]] = st
+                    RESULT["roots"].append(st)
+                for e in r.get("entries", []):
+                    if (r["root"], e["dir"]) not in done:
+                        done.add((r["root"], e["dir"]))
+                        st["entries"].append(e)
+        if earlier:
+            write(out_path)
+            for f in earlier:
+                os.remove(f)
+            print(f"resume: carried {len(done)} finished targets from {len(earlier)} "
+                  f"earlier attempt(s)", flush=True)
     for i, target in enumerate(paths):
         if i % shards != shard:
             continue
         loose = target.endswith(LOOSE)
         real = target[: -len(LOOSE)] if loose else target
+        batch = re.search(r"#\d+/\d+$", real)
+        suffix = batch.group(0) if batch else ""
+        real = real[: -len(suffix)] if suffix else real
         root = next((r for r in (roots or ("/n/netscratch/ydu_lab/Lab",
                                             "/n/netscratch/ydu_lab/Everyone"))
                      if real.startswith(r.rstrip("/") + "/")), os.path.dirname(real))
@@ -182,7 +235,9 @@ def scan_paths(paths, out_path, shard, shards, roots=()):
                   "complete": False, "error": None, "partial_targets": True}
             states[root] = st
             RESULT["roots"].append(st)
-        name = os.path.relpath(real, root) + (LOOSE if loose else "")
+        name = os.path.relpath(real, root) + suffix + (LOOSE if loose else "")
+        if (root, name) in done:
+            continue
         t0 = time.time()
         try:
             next(iter(os.scandir(real)), None)
@@ -196,8 +251,11 @@ def scan_paths(paths, out_path, shard, shards, roots=()):
             continue
         except OSError:
             pass
-        by, ok, err = walk(real, loose=loose)
+        walk.denied = []
+        by, ok, err = walk(real + suffix, loose=loose)
+        private = [{"path": d, "owner": owner_of(d)} for d in walk.denied[:MAX_PRIVATE]]
         entry = {"dir": name, "dir_owner": owner_of(real),
+                 "private": private, "private_more": max(len(walk.denied) - MAX_PRIVATE, 0),
                  "by": {g: {u: {"bytes": v[0], "files": v[1]} for u, v in us.items()}
                         for g, us in by.items()},
                  "bytes": sum(v[0] for us in by.values() for v in us.values()),

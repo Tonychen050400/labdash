@@ -14,11 +14,15 @@ import argparse, glob, heapq, json, os
 
 SPLIT_S = 1800
 UNKNOWN_S = 30
-MAX_DEPTH = 4        # levels below a top-level dir we are willing to split into
+MAX_DEPTH = 8        # levels below a top-level dir we are willing to split into
 # Never split a directory into more pieces than this. A dataset with one folder per
 # object (lab_storage .../akiruga/datasets/srn_nmr_*, ~36k each) turned one night's
 # plan into 76,779 targets, a 20 MiB page, and failing Pages deploys.
 MAX_FANOUT = 200
+# A directory wider than that is walked in BATCHES of its children instead:
+# "<dir>#k/n" walks the children whose sorted index % n == k in one find call.
+# srn_nmr_classes (36k subfolders, 144 min whole) becomes ~10 batches of ~15 min.
+MAX_BATCHES = 64
 
 
 def prev_seconds(prev, out=None):
@@ -34,7 +38,7 @@ def prev_seconds(prev, out=None):
     on disk.
     """
     def read(files):
-        sec = {}
+        sec, batch = {}, {}
         for f in files:
             try:
                 for r in json.load(open(f)).get("roots", []):
@@ -47,9 +51,15 @@ def prev_seconds(prev, out=None):
                         if d.endswith("/.") or d == ".":
                             continue
                         k = os.path.join(r["root"], d).rstrip("/")
+                        if "#" in d:          # one batch of a wide dir: batches add up
+                            base = k.split("#")[0]
+                            batch[(f, base)] = batch.get((f, base), 0) + (e.get("seconds") or 0)
+                            continue
                         sec[k] = max(sec.get(k, 0), e.get("seconds") or 0)
             except (OSError, json.JSONDecodeError, TypeError):
                 pass
+        for (_, base), tot in batch.items():
+            sec[base] = max(sec.get(base, 0), tot)
         return sec
     published = read(glob.glob(os.path.join(prev, "owner_shards", "*.json")) if prev else [])
     newer = read(glob.glob(os.path.join(out, "owner_runs", "*", "owner_shards", "*.json"))
@@ -101,6 +111,12 @@ def main():
             c = inherited
         if c is not None and c > SPLIT_S and depth < MAX_DEPTH:
             kids = dirs(p)
+            if kids and len(kids) > MAX_FANOUT:
+                import math
+                n = min(MAX_BATCHES, max(2, math.ceil(c / (SPLIT_S / 2))))
+                for k in range(n):
+                    est[f"{p}#{k}/{n}"] = c / n
+                return [p + "/."] + [f"{p}#{k}/{n}" for k in range(n)]
             if kids and len(kids) <= MAX_FANOUT:
                 out = [p + "/."]
                 for k in kids:

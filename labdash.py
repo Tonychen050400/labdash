@@ -799,6 +799,7 @@ def render(snap, history, fragment=False, dirscan=None, gpu_guide=None, ownersca
         _rules_section(snap, gpu_guide),
         _storage_section(snap, history),
         _group_tables_section(ownerscan, snap),
+        _private_section(ownerscan),
         _dirscan_section(dirscan, snap.get("folders") or [], snap,
                          replaced=_owner_scanned_folders(ownerscan)),
         _compute_section(snap, gpu_guide),
@@ -1281,8 +1282,21 @@ def load_ownerscan(out_dir):
                     # gaps inside them are not "in progress" -- they never resolve
                     # -- and are reported separately as incomplete/unreadable.
                     "complete": bool(total) and len(tops) >= total})
+    # Every directory the walk could not enter: whole targets it could not open, plus
+    # each path find reported "Permission denied" for inside the ones it could.
+    private, more = {}, 0
+    for r in roots.values():
+        for e in r["entries"].values():
+            d = re.sub(r"(#\d+/\d+)?(/\.)?$", "", e.get("dir") or "")
+            if e.get("unreadable"):
+                pth = os.path.join(r["root"], d)
+                private.setdefault(pth, e.get("dir_owner") or "unknown")
+            for pv in e.get("private") or []:
+                private.setdefault(pv["path"], pv.get("owner") or "unknown")
+            more += e.get("private_more") or 0
     return {"generated_at": stamp, "generated_local": stamp_local,
-            "roots": sorted(out, key=lambda r: r["root"] or "")}
+            "roots": sorted(out, key=lambda r: r["root"] or ""),
+            "private": sorted(private.items()), "private_more": more}
 
 
 def _under(root, path):
@@ -1351,7 +1365,7 @@ def _group_tables_section(scan, snap):
                                                  "parts": {}})
                         row["bytes"] += b
                         row["files"] += v.get("files") or 0
-                        d = prefix + e["dir"]
+                        d = prefix + re.sub(r"#\d+/\d+$", "", e["dir"])   # batches -> their dir
                         pt = row["parts"].setdefault(d, {"dir": d, "bytes": 0, "files": 0})
                         pt["bytes"] += b
                         pt["files"] += v.get("files") or 0
@@ -1476,6 +1490,87 @@ def _group_tables_section(scan, snap):
   <p class="note note--bare">Scanned {esc(scan.get("generated_local") or "?")}; the walk
     is expensive, so it runs once a day (03:00) rather than with every refresh.</p>
 </section>"""
+
+
+def _fs_of(path):
+    for fs in ("/n/netscratch", "/n/holylabs", "/n/lab_storage"):
+        if path.startswith(fs + "/"):
+            return fs
+    return os.path.dirname(path)
+
+
+def _private_section(scan):
+    """Folders the walk could not read, by owner, so the lab can ask them to open up.
+
+    Their bytes still count against the quotas but cannot be attributed to anyone,
+    which is most of why the tables come in under the cards. Listed by the owner of
+    each folder; also written as private_paths.csv beside the page.
+    """
+    items = (scan or {}).get("private") or []
+    if not items:
+        return ""
+    by = {}
+    for path, owner in items:
+        by.setdefault(owner, []).append(path)
+    rows = []
+    for i, (owner, paths) in enumerate(sorted(by.items(), key=lambda kv: (-len(kv[1]), kv[0]))):
+        paths = sorted(paths)
+        fss = sorted({_fs_of(x) for x in paths})
+        extra = " is-extra" if i >= TOP_ROWS else ""
+        shown = paths[:DETAIL_ROWS]
+        listing = "".join(f'<li class="mono">{esc(x)}</li>' for x in shown)
+        if len(paths) > len(shown):
+            listing += f'<li class="dim">&hellip; {fmt_int(len(paths) - len(shown))} more in private_paths.csv</li>'
+        rows.append(f"""<tr class="row{extra}" data-user="{esc(owner)}">
+  <td class="num dim cell-rank">{i + 1}</td>
+  <td class="cell-user">{esc(owner)}</td>
+  <td class="num">{fmt_int(len(paths))}</td>
+  <td class="dim">{esc(", ".join(f.split("/")[-1] for f in fss))}</td>
+  <td><ul class="privlist">{listing}</ul></td>
+</tr>""")
+    more = scan.get("private_more") or 0
+    more_txt = (f" A further {fmt_int(more)} were found inside heavily private trees and"
+                f" are counted but not listed.") if more else ""
+    return f"""<section class="section" id="private">
+  <header class="section__head">
+    <h2>Folders the scan can't read</h2>
+    <p>{fmt_int(len(items))} folders, {fmt_int(len(by))} owners. Their files still count against
+      the quotas above but can't be attributed to anyone, which is most of why the tables
+      come in under the cards. To open one for the lab to read, its owner runs
+      <code>chmod -R g+rX &lt;folder&gt;</code> (every folder above it needs <code>g+x</code>
+      too). Folders inside a private folder can't be seen at all, so opening one can reveal
+      more.{more_txt} <a href="private_paths.csv">Download the full list (CSV)</a>.</p>
+  </header>
+  <div class="panel">
+    <header class="panel__head">
+      <div><h3>Private folders by owner</h3>
+        <p class="stamp">from the scan of {esc(scan.get("generated_local") or "?")}</p></div>
+      <div class="controls">
+        <input class="filter" type="search" placeholder="Find a name&hellip;"
+               aria-label="Filter this table by username">
+        {f'<button class="toggle" type="button">Show all {len(by)}</button>' if len(by) > TOP_ROWS else ''}
+      </div>
+    </header>
+    <div class="scroll"><table class="table table--sortable">
+      <thead><tr><th class="num">#</th><th>Owner</th><th class="num">Folders</th>
+        <th>Where</th><th>Paths</th></tr></thead>
+      <tbody>{''.join(rows)}</tbody>
+    </table></div>
+    <p class="empty" hidden>No one here matches that name.</p>
+  </div>
+</section>"""
+
+
+def _write_private_csv(scan, out_dir):
+    import csv
+    items = (scan or {}).get("private") or []
+    tmp = os.path.join(out_dir, "private_paths.csv.tmp")
+    with open(tmp, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["owner", "filesystem", "path"])
+        for path, owner in sorted(items, key=lambda x: (x[1], x[0])):
+            w.writerow([owner, _fs_of(path), path])
+    os.replace(tmp, os.path.join(out_dir, "private_paths.csv"))
 
 
 def _owner_scanned_folders(ownerscan):
@@ -2267,6 +2362,8 @@ code{font-family:var(--mono); font-size:.86em; background:var(--surface-3);
 tr.detail td{background:var(--surface-2); padding:0}
 tr.detail td.cell-dir, tr.detail td.num, tr.detail td.cell-bar{padding:5px 12px; font-size:.8rem}
 tr.detail td{vertical-align:middle}
+.privlist{list-style:none; margin:0; padding:0; font-size:.78rem; line-height:1.5}
+.privlist li{overflow-wrap:anywhere}
 tr.detail td.cell-dir{padding-left:28px; white-space:normal; overflow-wrap:anywhere}
 .parts{list-style:none; margin:0; padding:6px 0 10px}
 .parts li{display:grid; grid-template-columns:minmax(10ch,22ch) 90px auto 11ch;
@@ -2518,6 +2615,8 @@ def main():
 
     dirscan = load_dirscan(out)
     ownerscan = load_ownerscan(out)
+    if ownerscan:
+        _write_private_csv(ownerscan, out)
     gpu_guide = load_gpu_guide(out)
     files = [("snapshot.json", json.dumps(snap, indent=2)),
              ("index.html", render(snap, history, dirscan=dirscan, gpu_guide=gpu_guide, ownerscan=ownerscan))]

@@ -14,7 +14,10 @@ PY=$("$HERE/py.sh" --print)
 GROUP_LIST=${LABDASH_GROUPS:-$(id -gn)}
 OUT="${LABDASH_OUT:-/n/holylabs/LABS/${GROUP_LIST%% *}/Lab/labdash}"
 ACCT="${LABDASH_ACCOUNT:-${GROUP_LIST%% *}}"
-SHARDS=${OWNERSCAN_SHARDS:-64}
+SHARDS=${OWNERSCAN_SHARDS:-128}
+# serial_requeue: ~120k CPUs, preemptible. A preempted task is requeued by Slurm and
+# ownerscan.py resumes it from the targets it already finished.
+PART=${OWNERSCAN_PARTITION:-serial_requeue}
 if [ -n "${LABDASH_OWNER_ROOTS:-}" ]; then read -ra ROOTS <<< "$LABDASH_OWNER_ROOTS"; else
   ROOTS=(); for g in $GROUP_LIST; do for d in /n/netscratch/$g/Lab /n/netscratch/$g/Users /n/netscratch/$g/Everyone; do [ -d "$d" ] && ROOTS+=("$d"); done; done; fi
 [ ${#ROOTS[@]} -gt 0 ] || { echo "ownerscan_submit: no roots" >&2; exit 1; }
@@ -33,7 +36,7 @@ PREV=$(readlink -f "$OUT/owner_current" 2>/dev/null || true)
 mkdir -p "$RUN" "$HERE/logs"
 "$PY" "$HERE/ownerscan_plan.py" --run "$RUN" --out "$OUT" ${PREV:+--prev "$PREV"} --shards "$SHARDS" --roots "${ROOTS[@]}" || exit 1
 
-ARR=$(sbatch --parsable --account="$ACCT" --partition=sapphire --array=0-$((SHARDS-1)) \
+ARR=$(sbatch --parsable --account="$ACCT" --partition="$PART" --requeue --array=0-$((SHARDS-1)) \
   --cpus-per-task=1 --mem=4G --time=1-00:00:00 --job-name=ownerscan \
   --output="$HERE/logs/ownerscan_%A_%a.log" \
   --wrap="$PY $HERE/ownerscan.py --out $RUN --paths-file $RUN/targets.\$SLURM_ARRAY_TASK_ID.txt --shard 0 --shards 1 --roots ${ROOTS[*]}") || exit 1
@@ -43,7 +46,7 @@ FIN=$(sbatch --parsable --account="$ACCT" --partition=shared --dependency=aftera
   --output="$HERE/logs/ownerscan_publish_%j.log" --wrap="
 bad=\$(sacct -j $ARR -X --noheader --format=State | grep -vc COMPLETED)
 want=\$(cat $RUN/targets.*.txt | grep -c .)
-got=\$($PY -c \"import json,glob;print(sum(len(r['entries']) for f in glob.glob('$RUN/owner_shards/*.json') for r in json.load(open(f))['roots']))\")
+got=\$($PY -c \"import json,glob;print(len({(r['root'],e['dir']) for f in glob.glob('$RUN/owner_shards/*.json') for r in json.load(open(f))['roots'] for e in r['entries']}))\")
 echo \"run $RUN: tasks not completed=\$bad, targets \$got/\$want\"
 if [ \"\$bad\" -eq 0 ] && [ \"\$got\" -ge \"\$want\" ]; then
   date -Is > $RUN/COMPLETE; ln -sfn $RUN $OUT/owner_current.tmp && mv -T $OUT/owner_current.tmp $OUT/owner_current
