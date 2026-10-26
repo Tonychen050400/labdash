@@ -17,7 +17,7 @@ ACCT="${LABDASH_ACCOUNT:-${GROUP_LIST%% *}}"
 SHARDS=${OWNERSCAN_SHARDS:-128}
 # serial_requeue: ~120k CPUs, preemptible. A preempted task is requeued by Slurm and
 # ownerscan.py resumes it from the targets it already finished.
-PART=${OWNERSCAN_PARTITION:-serial_requeue}
+PART=${OWNERSCAN_PARTITION:-serial_requeue,sapphire,shared}   # whichever has room first
 if [ -n "${LABDASH_OWNER_ROOTS:-}" ]; then read -ra ROOTS <<< "$LABDASH_OWNER_ROOTS"; else
   ROOTS=(); for g in $GROUP_LIST; do for d in /n/netscratch/$g/Lab /n/netscratch/$g/Users /n/netscratch/$g/Everyone; do [ -d "$d" ] && ROOTS+=("$d"); done; done; fi
 [ ${#ROOTS[@]} -gt 0 ] || { echo "ownerscan_submit: no roots" >&2; exit 1; }

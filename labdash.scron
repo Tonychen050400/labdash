@@ -34,7 +34,9 @@
 # only paper over someone else's outage, and a failed deploy costs one stale cycle,
 # never downtime.
 # ---------------------------------------------------------------------------
-#SCRON --partition=shared
+# Three CPU partitions: Slurm starts it on whichever has room first. On 2026-10-26
+# the shared queue alone held a 10-minute refresh for 4+ hours behind 423 jobs.
+#SCRON --partition=shared,serial_requeue,sapphire
 #SCRON --account=ydu_lab
 #SCRON --cpus-per-task=1
 #SCRON --mem=2G
