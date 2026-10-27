@@ -32,7 +32,9 @@ case "$LABDASH_PUBLISH" in
       exit 0
     fi
     cp "$LABDASH_OUT/index.html" "$LABDASH_OUT/snapshot.json" "$LABDASH_REPO/" || exit 0
-    [ -f "$LABDASH_OUT/private_paths.csv" ] && cp "$LABDASH_OUT/private_paths.csv" "$LABDASH_REPO/"
+    for f in private_paths.csv private_folders_by_owner.csv; do
+      [ -f "$LABDASH_OUT/$f" ] && cp "$LABDASH_OUT/$f" "$LABDASH_REPO/"
+    done
     touch "$LABDASH_REPO/.nojekyll"   # ship files verbatim, skip the Jekyll build
     git -C "$LABDASH_REPO" add -A
     if git -C "$LABDASH_REPO" diff --cached --quiet; then

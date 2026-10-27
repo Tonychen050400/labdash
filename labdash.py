@@ -1499,47 +1499,74 @@ def _fs_of(path):
     return os.path.dirname(path)
 
 
+def _private_groups(scan):
+    """Private paths collapsed to (owner, person-level folder) -> count.
+
+    Once the walk recorded every "Permission denied" it met, the raw list ran to
+    36k paths: one dataset alone held thousands of private sibling folders. What
+    the lab acts on is "who has to open which of their folders", so each path is
+    folded up to the folder directly under Lab/, Everyone/ or the fileset root --
+    one chmod -R there opens everything listed under it. 110 lines on 2026-10-27.
+    """
+    roots = sorted({r["root"] for r in (scan or {}).get("roots", [])}, key=len, reverse=True)
+    def head(p):
+        for r in roots:
+            if p.startswith(r.rstrip("/") + "/"):
+                parts = p[len(r.rstrip("/")) + 1:].split("/")
+                k = 2 if parts[0] in SUBTREES and len(parts) > 1 else 1
+                return r.rstrip("/") + "/" + "/".join(parts[:k])
+        return p
+    g = {}
+    for path, owner in (scan or {}).get("private") or []:
+        key = (owner, head(path))
+        g[key] = g.get(key, 0) + 1
+    return g
+
+
 def _private_section(scan):
     """Folders the walk could not read, by owner, so the lab can ask them to open up.
 
     Their bytes still count against the quotas but cannot be attributed to anyone,
-    which is most of why the tables come in under the cards. Listed by the owner of
-    each folder; also written as private_paths.csv beside the page.
+    which is most of why the tables come in under the cards. Summarised per owner and
+    folder on the page and in private_folders_by_owner.csv; every individual path is
+    in private_paths.csv.
     """
-    items = (scan or {}).get("private") or []
-    if not items:
+    groups = _private_groups(scan)
+    if not groups:
         return ""
     by = {}
-    for path, owner in items:
-        by.setdefault(owner, []).append(path)
+    for (owner, folder), n in groups.items():
+        by.setdefault(owner, []).append((folder, n))
+    total = sum(groups.values())
     rows = []
-    for i, (owner, paths) in enumerate(sorted(by.items(), key=lambda kv: (-len(kv[1]), kv[0]))):
-        paths = sorted(paths)
-        fss = sorted({_fs_of(x) for x in paths})
+    for i, (owner, fl) in enumerate(sorted(by.items(), key=lambda kv: -sum(n for _, n in kv[1]))):
+        fl.sort(key=lambda x: -x[1])
         extra = " is-extra" if i >= TOP_ROWS else ""
-        shown = paths[:DETAIL_ROWS]
-        listing = "".join(f'<li class="mono">{esc(x)}</li>' for x in shown)
-        if len(paths) > len(shown):
-            listing += f'<li class="dim">&hellip; {fmt_int(len(paths) - len(shown))} more in private_paths.csv</li>'
+        shown = fl[:10]
+        listing = "".join(f'<li><span class="mono">{esc(f)}</span> <span class="dim">&middot; {fmt_int(n)}</span></li>'
+                          for f, n in shown)
+        if len(fl) > len(shown):
+            listing += f'<li class="dim">&hellip; {fmt_int(len(fl) - len(shown))} more folders in the CSV</li>'
         rows.append(f"""<tr class="row{extra}" data-user="{esc(owner)}">
   <td class="num dim cell-rank">{i + 1}</td>
   <td class="cell-user">{esc(owner)}</td>
-  <td class="num">{fmt_int(len(paths))}</td>
-  <td class="dim">{esc(", ".join(f.split("/")[-1] for f in fss))}</td>
+  <td class="num" data-sort="{sum(n for _, n in fl)}">{fmt_int(sum(n for _, n in fl))}</td>
   <td><ul class="privlist">{listing}</ul></td>
 </tr>""")
     more = scan.get("private_more") or 0
-    more_txt = (f" A further {fmt_int(more)} were found inside heavily private trees and"
-                f" are counted but not listed.") if more else ""
+    more_txt = (f" Some trees hold more than the 500 private folders recorded per directory walked;"
+                f" another {fmt_int(more)} are counted but not listed.") if more else ""
     return f"""<section class="section" id="private">
   <header class="section__head">
     <h2>Folders the scan can't read</h2>
-    <p>{fmt_int(len(items))} folders, {fmt_int(len(by))} owners. Their files still count against
+    <p>{fmt_int(total)} private folders, {fmt_int(len(by))} owners. Their files still count against
       the quotas above but can't be attributed to anyone, which is most of why the tables
-      come in under the cards. To open one for the lab to read, its owner runs
-      <code>chmod -R g+rX &lt;folder&gt;</code> (every folder above it needs <code>g+x</code>
-      too). Folders inside a private folder can't be seen at all, so opening one can reveal
-      more.{more_txt} <a href="private_paths.csv">Download the full list (CSV)</a>.</p>
+      come in under the cards. Each line is one of the owner's folders and how many private
+      folders sit inside it; running <code>chmod -R g+rX &lt;folder&gt;</code> on that one
+      folder opens all of them (every folder above it needs <code>g+x</code> too). A folder
+      inside a private folder can't be seen at all, so opening one can reveal more.{more_txt}
+      <a href="private_folders_by_owner.csv">Summary CSV</a> &middot;
+      <a href="private_paths.csv">every path (CSV)</a>.</p>
   </header>
   <div class="panel">
     <header class="panel__head">
@@ -1552,8 +1579,8 @@ def _private_section(scan):
       </div>
     </header>
     <div class="scroll"><table class="table table--sortable">
-      <thead><tr><th class="num">#</th><th>Owner</th><th class="num">Folders</th>
-        <th>Where</th><th>Paths</th></tr></thead>
+      <thead><tr><th class="num">#</th><th>Owner</th><th class="num">Private folders</th>
+        <th>Where (folder &middot; private folders inside)</th></tr></thead>
       <tbody>{''.join(rows)}</tbody>
     </table></div>
     <p class="empty" hidden>No one here matches that name.</p>
@@ -1564,13 +1591,18 @@ def _private_section(scan):
 def _write_private_csv(scan, out_dir):
     import csv
     items = (scan or {}).get("private") or []
-    tmp = os.path.join(out_dir, "private_paths.csv.tmp")
-    with open(tmp, "w", newline="") as fh:
-        w = csv.writer(fh)
-        w.writerow(["owner", "filesystem", "path"])
-        for path, owner in sorted(items, key=lambda x: (x[1], x[0])):
-            w.writerow([owner, _fs_of(path), path])
-    os.replace(tmp, os.path.join(out_dir, "private_paths.csv"))
+    for name, header, data in (
+            ("private_paths.csv", ["owner", "filesystem", "path"],
+             [(o, _fs_of(p), p) for p, o in sorted(items, key=lambda x: (x[1], x[0]))]),
+            ("private_folders_by_owner.csv", ["owner", "folder", "private_folders_inside"],
+             [(o, f, n) for (o, f), n in sorted(_private_groups(scan).items(),
+                                                 key=lambda kv: (kv[0][0], -kv[1]))])):
+        tmp = os.path.join(out_dir, name + ".tmp")
+        with open(tmp, "w", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(header)
+            w.writerows(data)
+        os.replace(tmp, os.path.join(out_dir, name))
 
 
 def _owner_scanned_folders(ownerscan):
