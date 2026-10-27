@@ -63,7 +63,7 @@
 # -- Isilon only reveals a fileset's 100 TiB limit when df is asked about the
 # directory itself, not the mount point.
 # ---------------------------------------------------------------------------
-#SCRON --partition=shared
+#SCRON --partition=shared,serial_requeue,sapphire
 #SCRON --account=ydu_lab
 #SCRON --cpus-per-task=1
 #SCRON --mem=2G
@@ -75,7 +75,7 @@
 # ---------------------------------------------------------------------------
 # Roster refresh - picks up new lab members, keeps emails already typed in.
 # ---------------------------------------------------------------------------
-#SCRON --partition=shared
+#SCRON --partition=shared,serial_requeue,sapphire
 #SCRON --account=ydu_lab
 #SCRON --cpus-per-task=1
 #SCRON --mem=2G
@@ -95,7 +95,7 @@
 # tables were a one-off scan for two days before this line existed, and showed a
 # member 4 TiB they had already moved -- the page now flags a scan older than 36h.
 # ---------------------------------------------------------------------------
-#SCRON --partition=shared
+#SCRON --partition=shared,serial_requeue,sapphire
 #SCRON --account=ydu_lab
 #SCRON --cpus-per-task=1
 #SCRON --mem=2G
