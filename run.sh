@@ -32,9 +32,11 @@ case "$LABDASH_PUBLISH" in
       exit 0
     fi
     cp "$LABDASH_OUT/index.html" "$LABDASH_OUT/snapshot.json" "$LABDASH_REPO/" || exit 0
-    for f in private_paths.csv private_folders_by_owner.csv; do
+    for f in private_folders_by_owner.csv private_paths.csv.gz; do
       [ -f "$LABDASH_OUT/$f" ] && cp "$LABDASH_OUT/$f" "$LABDASH_REPO/"
     done
+    # The full list ships gzipped only; the plain 4.5 MB copy stays on the cluster.
+    rm -f "$LABDASH_REPO/private_paths.csv"
     touch "$LABDASH_REPO/.nojekyll"   # ship files verbatim, skip the Jekyll build
     git -C "$LABDASH_REPO" add -A
     if git -C "$LABDASH_REPO" diff --cached --quiet; then

@@ -1566,7 +1566,7 @@ def _private_section(scan):
       folder opens all of them (every folder above it needs <code>g+x</code> too). A folder
       inside a private folder can't be seen at all, so opening one can reveal more.{more_txt}
       <a href="private_folders_by_owner.csv">Summary CSV</a> &middot;
-      <a href="private_paths.csv">every path (CSV)</a>.</p>
+      <a href="private_paths.csv.gz">every path (CSV, gzipped)</a>.</p>
   </header>
   <div class="panel">
     <header class="panel__head">
@@ -1603,6 +1603,18 @@ def _write_private_csv(scan, out_dir):
             w.writerow(header)
             w.writerows(data)
         os.replace(tmp, os.path.join(out_dir, name))
+    # The full list is ~4.5 MB of highly repetitive paths; gzipped it is ~0.3 MB.
+    # The website gets only the .gz, so a Pages deploy carries ~2 MB instead of ~6
+    # (deploys had been timing out on GitHub's side); the plain file stays here on
+    # the cluster. mtime=0 keeps identical content byte-identical between refreshes.
+    import gzip
+    src = os.path.join(out_dir, "private_paths.csv")
+    tmp = src + ".gz.tmp"
+    with open(src, "rb") as fi, open(tmp, "wb") as raw:
+        with gzip.GzipFile(filename="private_paths.csv", mode="wb", fileobj=raw,
+                           compresslevel=9, mtime=0) as fo:
+            fo.write(fi.read())
+    os.replace(tmp, src + ".gz")
 
 
 def _owner_scanned_folders(ownerscan):
