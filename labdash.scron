@@ -36,7 +36,10 @@
 # ---------------------------------------------------------------------------
 # Three CPU partitions: Slurm starts it on whichever has room first. On 2026-10-26
 # the shared queue alone held a 10-minute refresh for 4+ hours behind 423 jobs.
-#SCRON --partition=shared,serial_requeue,sapphire
+# Not serial_requeue: on 2026-11-14 a refresh there was preempted mid-run, sat
+# requeued for 40 h without starting, was cancelled by root, and Slurm disabled
+# this entry -- the page froze for two days. shared and sapphire don't preempt.
+#SCRON --partition=shared,sapphire
 #SCRON --account=ydu_lab
 #SCRON --cpus-per-task=1
 #SCRON --mem=2G
